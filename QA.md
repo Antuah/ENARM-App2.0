@@ -63,3 +63,13 @@ SMTP real no se probó con un proveedor: los tests inyectan un buzón de prueba 
 - ZIP de API generado desde una lista explícita de archivos, con 20 entradas; sin `.env`, bases locales, pruebas ni node_modules de macOS.
 - API extraída del ZIP verificada localmente contra PostgreSQL de Azure: health 200 y frontend deshabilitado (404 en `/`).
 - El reenviado de Render y las URLs públicas aún requieren verificación una vez que los servicios estén desplegados.
+
+## Backend publicado en Azure · 30 de septiembre de 2026
+
+- App Service `entrenarme-api` creado en el plan Linux Basic B1 `entrenarme-plan`, con Always On y HTTPS activados.
+- URL verificada: https://entrenarme-api-haghf3bbfwgda8g9.eastus2-01.azurewebsites.net/api/health. Respondió 200 y `{"status":"ok"}` contra PostgreSQL de Azure.
+- Verificación real sobre la API pública: registro, cookie Secure/HttpOnly/SameSite=Lax, lectura de perfil, creación de quiz con cinco preguntas, guardado de respuesta y posición, cierre de sesión, nuevo login y recuperación del avance.
+- Finalización del quiz y rechazo de modificaciones desde un origen distinto comprobados. Tras logout, el acceso autenticado devuelve 401. Las respuestas de API usan `Cache-Control: no-store`.
+- La cuenta temporal de verificación y sus registros asociados se eliminaron al finalizar; no se modificaron cuentas ajenas.
+- La contraseña PostgreSQL se guardó en la configuración privada de App Service. Los archivos temporales con credenciales se eliminaron tanto localmente como en Cloud Shell.
+- Render aún requiere inicio de sesión del propietario, publicación del frontend y verificación del proxy real. `APP_ORIGIN` apunta temporalmente al dominio Azure y debe actualizarse al dominio definitivo del frontend.

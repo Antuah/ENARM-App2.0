@@ -17,6 +17,8 @@ Copia el **dominio predeterminado real** de Información general. Los recursos n
 
 Recurso creado para esta demo el 30 de septiembre de 2026: `entrenarme-api` en `entrenarme-plan` Basic B1, East US 2. Host: `entrenarme-api-haghf3bbfwgda8g9.eastus2-01.azurewebsites.net`. El portal mostró USD 12.41/mes estimados para el plan, adicional a PostgreSQL. El `render.yaml` de la raíz ya contiene este destino.
 
+El backend ya está publicado y su [endpoint de salud](https://entrenarme-api-haghf3bbfwgda8g9.eastus2-01.azurewebsites.net/api/health) respondió correctamente. Registro, login, persistencia de quiz y logout se comprobaron sobre esa API pública. La publicación del frontend en Render sigue pendiente del inicio de sesión del propietario; todavía no se verificó su proxy externo. El origen permitido temporal es el dominio Azure y se cambiará al dominio real de Render al publicarlo.
+
 ## 2. Preparar Render
 
 Crea un Static Site desde el repositorio con el código actualizado:
