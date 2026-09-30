@@ -1,84 +1,83 @@
-# Entrenarme — mockup navegable
+# Entrenarme · aplicación web
 
-Aplicación de demostración para preparar el ENARM, diseñada primero para teléfono y adaptada a computadora. Implementada en esta carpeta con React y Vite. No requiere servidor, cuentas reales ni servicios externos.
+Aplicación para practicar el ENARM, con diseño pensado primero para móvil y adaptable a computadora. Ahora incluye backend, cuentas y persistencia real. El flujo y las mascotas del mockup se conservaron; el progreso dejó de depender de datos simulados del navegador.
 
-## Abrir en tu computadora
+## Tecnologías
 
-Requisitos: Node.js 22 o posterior y npm.
+- **React 19 + Vite 6**: interfaz, navegación y compilación de la web.
+- **Node.js 24 + Fastify 5**: API HTTP y servidor del frontend compilado.
+- **PostgreSQL + `pg`**: base de datos para producción, consultas parametrizadas, migraciones SQL y transacciones.
+- **PGlite**: PostgreSQL embebido para desarrollo, sin instalar un servicio de base de datos. Guarda información en `server/data/postgres/`.
+- **Zod**: validación de las solicitudes y del banco de preguntas.
+- **scrypt de Node.js**: hashes de contraseñas con sal individual. Sesiones opacas en cookies HttpOnly, protección CSRF, validación del origen y límites de solicitudes con plugins de Fastify.
+- **Nodemailer**: recuperación de contraseña por SMTP. En desarrollo, sin SMTP, genera correos de prueba en una carpeta local.
+- **Docker / Compose**: empaquetado de la aplicación y PostgreSQL. **GitHub Actions**: pruebas y compilación, sin publicación automática en Pages.
+
+## Ejecutar localmente
+
+Necesitas Node.js **24 o posterior** y npm.
 
 ```sh
 npm install
 npm run dev
 ```
 
-Abre la dirección que aparece en la terminal. Para revisar la versión de producción:
+Abre [http://127.0.0.1:5173](http://127.0.0.1:5173). Este comando inicia la web y la API juntas. Puedes crear una cuenta y entrenar: la base local conserva tus datos al reiniciar. No necesitas una cuenta externa ni configurar servicios para probarla.
+
+Opcionalmente copia `.env.example` a `.env` para personalizar los puertos, conectar PostgreSQL o SMTP. Usa la dirección `127.0.0.1`, igual que `APP_ORIGIN`, para que las solicitudes de la web coincidan con el origen permitido.
+
+Para probar el frontend compilado servido por Fastify, define en `.env` `SERVE_FRONTEND=true` y `APP_ORIGIN=http://127.0.0.1:3001`, luego ejecuta:
 
 ```sh
 npm run build
-npm run preview
+npm start
 ```
 
-## Publicar en GitHub Pages
+Abre [http://127.0.0.1:3001](http://127.0.0.1:3001). `npm run preview` sirve únicamente archivos estáticos y no reemplaza al backend.
 
-1. Sube el contenido de esta carpeta a la rama `main` de tu repositorio de GitHub. No subas `node_modules` ni `dist`.
-2. En el repositorio abre **Settings → Pages → Build and deployment → Source** y elige **GitHub Actions**.
-3. El workflow **Deploy to GitHub Pages** compila y publica cada cambio en `main`. También puede ejecutarse desde **Actions → Deploy to GitHub Pages → Run workflow**.
-4. La dirección pública aparecerá en **Settings → Pages** y en el resultado del workflow.
+## Funciones conectadas
 
-El proyecto está preparado tanto para `usuario.github.io` como para `usuario.github.io/nombre-del-repositorio/`: los archivos se cargan con rutas relativas y la navegación usa `#/ruta`. Las pantallas pueden abrirse directamente y recargarse sin errores 404. `public/.nojekyll` se copia a la publicación.
+- Registro, login, sesión persistente, cierre de sesión y recuperación de contraseña con enlaces de 30 minutos y un solo uso.
+- Perfil y preferencias guardados por cuenta.
+- Quiz rápido, personalizado por áreas/temas, repaso de errores y tarjetas de preguntas marcadas.
+- Respuestas y posición guardadas automáticamente; posibilidad de retomar una actividad pendiente.
+- Calificación en el servidor. Las respuestas correctas se entregan al finalizar un quiz o revelar una tarjeta.
+- Historial, revisión de resultados, promedio reciente, gráfica por periodo, análisis por área y racha reales.
+- ENARMapa con siete misiones, desbloqueo en orden y recompensas de Tokens+ una sola vez.
+- Balance de 10 tokens diarios, renovado según la fecha de Ciudad de México. Un token por cada cinco preguntas/tarjetas, redondeando hacia arriba. Las misiones no consumen tokens.
+- Importación del banco mediante archivo JSON y comando administrativo local.
 
-**Estado:** configuración lista. No se ha creado un repositorio remoto ni publicado un sitio desde esta tarea.
+Cada cuenta tiene su propio avance. El perfil ficticio que estaba en `localStorage` no se convierte automáticamente en una cuenta real. Los días sin práctica aparecen sin datos en la gráfica.
 
-## Recorridos incluidos
+## Banco, correo y publicación
 
-- Bienvenida → registro (información, plan y meta) → inicio.
-- Inicio de sesión y recuperación de acceso simulados.
-- Inicio con misión, promedio, racha, recursos y accesos rápidos.
-- Quiz rápido, quiz de repaso y quiz personalizado por área y tema.
-- Preguntas con selección de respuesta, anterior/siguiente, marcador, mapa de reactivos y confirmación de salida.
-- Resultado, revisión de respuestas y filtros de aciertos/errores.
-- Repaso inteligente y flashcards con respuesta revelable y autoevaluación.
-- ENARMapa con misiones disponibles, completadas y bloqueadas; al completar una actividad se habilita la siguiente.
-- Estadísticas, análisis por área, cambio de periodo e historial.
-- Perfil, preguntas marcadas, edición de preferencias, planes y preguntas frecuentes.
+En desarrollo se incluyen **cinco preguntas de prueba**, conservadas del mockup. La cantidad elegida en un quiz es el máximo solicitado; si hay menos preguntas disponibles, se usan las disponibles y se cobra según la cantidad real. El banco necesita contenido revisado antes de usarse para preparación real. Producción empieza sin esas preguntas, salvo que se habilite explícitamente la carga de ejemplos.
 
-## Alcance de la demo
+El envío de correo real necesita credenciales SMTP y un remitente configurado. En desarrollo, los enlaces de recuperación se encuentran en `server/data/outbox/*.json`; no se devuelven por la API. Premium y pagos todavía no están habilitados. Las preferencias de sonido y recordatorios se conservan, pero sus servicios aún no se ejecutan.
 
-La navegación y las interacciones básicas sí funcionan. La aplicación comienza con datos de ejemplo para que todas las pantallas puedan evaluarse. Los quizzes seleccionan 20, 50 o 100 preguntas en la configuración, pero recorren **hasta cinco preguntas ilustrativas**; las flashcards usan las preguntas marcadas. Los temas y áreas seleccionados filtran esas preguntas de muestra.
+La aplicación completa necesita hosting que ejecute Node.js y una base PostgreSQL, con HTTPS. **GitHub Pages no ejecuta esta API**. Fastify puede servir web y API juntas, o solo la API con `SERVE_FRONTEND=false`. La base de Azure ya está conectada; publicar los servidores es un paso separado. La guía de [Azure App Service + Render](docs/DEPLOY-AZURE-RENDER.md) prepara esa separación mediante un proxy para conservar las sesiones del navegador.
 
-No hay autenticación, envío de correos, pagos, suscripciones, consumo de tokens, notificaciones reales ni banco de preguntas validado. Login admite cualquier correo de ejemplo y una contraseña no vacía; registro solicita al menos ocho caracteres para demostrar la validación visual. Usa datos ficticios.
-
-El nombre, el correo de ejemplo, la especialidad, el plan, las preferencias y el avance se conservan **solo en el navegador**, bajo `entrenarme-demo-v1` en `localStorage`. Las contraseñas no se guardan. Los resultados de la demo actualizan el promedio reciente y el historial. La gráfica, la racha y el análisis por áreas son ilustrativos. Una actividad en curso se pierde al recargar; el resto del avance permanece.
-
-Las fuentes y las imágenes se incluyen en el proyecto. La aplicación no necesita llamadas a API para funcionar.
-
-## Referencias de diseño y flujo
-
-- Flujo: [Entrenarme en Netlify](https://entrenarme.netlify.app/).
-- Identidad visual y pantallas públicas: [prototipo de Figma](https://www.figma.com/proto/jsXAwqhTzrlInapYCFsOLv/Entrenarme_web?node-id=2-2&scaling=scale-down-width&page-id=0%3A1&starting-point-node-id=194%3A289).
-- Se conservaron los tonos morado oscuro, fucsia, cian y lima, la mascota y la idea de entrenamiento progresivo. La composición se adaptó a móvil; la vista de computadora agrega navegación lateral.
-
-## Mascotas
-
-Las cuatro imágenes adjuntas se prepararon con la herramienta integrada **image_gen**, sin usar la API ni una clave externa. Los archivos originales de Descargas no se modificaron. Las versiones con transparencia utilizadas por la aplicación están en:
-
-- `public/assets/hero.png`: mascota con cerebro.
-- `public/assets/doctor.png`: mascota de frente.
-- `public/assets/welcome.png`: mascota de bienvenida.
-- `public/assets/celebrate.png`: celebración al terminar una actividad.
-
-Prompt aplicado individualmente a cada imagen:
-
-> Use case: background-extraction. Edit target: attached mascot illustration. Remove ONLY the entire white or gray checkerboard background and produce a clean genuinely transparent PNG with alpha. Preserve the exact illustration, pose, face, colors, clothing, proportions, full character and all foreground objects. No added shadows, no background, no text, no visual redesign. Keep all character features opaque, including white eyes. Center full cutout with a small transparent margin. This is a project mascot asset to overlay on a deep purple website. Return a saved local image file.
-
-## Archivos principales
-
-- `src/App.jsx`: pantallas, navegación y estado de la demo.
-- `src/data.js`: actividades, áreas, misiones y cinco preguntas de muestra.
-- `src/styles.css`: identidad visual y adaptación a diferentes tamaños.
-- `.github/workflows/deploy.yml`: publicación automática en GitHub Pages.
-- `vite.config.js`: rutas relativas para publicar bajo cualquier nombre de repositorio.
+La configuración de producción, los comandos del banco y las decisiones de seguridad están en [docs/BACKEND.md](docs/BACKEND.md). El contrato HTTP está en [docs/API.md](docs/API.md). Para conectar el servidor ya creado en Azure, sigue [docs/AZURE.md](docs/AZURE.md).
 
 ## Verificación
 
-Consulta `QA.md` para los recorridos y tamaños revisados durante la implementación.
+```sh
+npm run build
+npm test
+```
+
+Las pruebas usan una base aislada en memoria y cubren autenticación, acceso entre cuentas, CSRF, calificación, persistencia de actividades, concurrencia, tokens, tarjetas, misiones, recuperación y snapshots del banco. Para ejecutarlas contra PostgreSQL normal, usa `TEST_DATABASE_URL` apuntando **solo a una base desechable**, pues las pruebas escriben cuentas y preguntas de prueba.
+
+Consulta [QA.md](QA.md) para los resultados verificados durante esta implementación.
+
+## Estructura
+
+- `src/App.jsx`, `src/styles.css`: pantallas y diseño responsive.
+- `src/api.js`: comunicación con el backend; el token CSRF permanece en memoria.
+- `src/catalog.js`: metadatos visuales compartidos, sin respuestas del banco.
+- `server/auth.js`, `server/training.js`, `server/state.js`: cuentas, entrenamientos y consultas de progreso.
+- `server/migrations/`: esquema versionado de PostgreSQL.
+- `server/test/`: pruebas de integración de la API.
+- `public/assets/`: cuatro mascotas preparadas a partir de las imágenes adjuntas; los originales no se modificaron.
+
+Referencias del diseño y flujo: [Entrenarme en Netlify](https://entrenarme.netlify.app/) y [prototipo de Figma](https://www.figma.com/proto/jsXAwqhTzrlInapYCFsOLv/Entrenarme_web?node-id=2-2&scaling=scale-down-width&page-id=0%3A1&starting-point-node-id=194%3A289).

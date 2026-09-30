@@ -1,4 +1,12 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { api } from "./api.js";
+const BusyContext = createContext(false);
 import {
   ArrowRight,
   ArrowLeft,
@@ -51,7 +59,7 @@ import {
   CircleX,
   Volume2,
 } from "lucide-react";
-import { activities, areas, missions, questions, sampleHistory } from "./data";
+import { activities, areas, missions } from "./catalog.js";
 
 const icons = {
   ArrowRight,
@@ -151,10 +159,12 @@ function Button({
   className = "",
   ...props
 }) {
+  const busy = useContext(BusyContext);
   return (
     <button
       className={`${ghost ? "btn-ghost" : secondary ? "btn-secondary" : "btn-primary"} ${className}`}
       {...props}
+      disabled={busy || props.disabled}
     >
       {children}
       {icon && <Icon name={icon} size={18} />}
@@ -249,13 +259,6 @@ function Password({ label = "Contraseña", ...props }) {
     </label>
   );
 }
-const safeRead = () => {
-  try {
-    return JSON.parse(localStorage.getItem("entrenarme-demo-v1")) || {};
-  } catch {
-    return {};
-  }
-};
 const navItems = [
   { path: "/inicio", icon: "Home", name: "Inicio" },
   { path: "/quizzes", icon: "Zap", name: "Quizzes" },
@@ -268,23 +271,51 @@ export default function App() {
   const [route, setRoute] = useState(
     () => window.location.hash.slice(1) || "/bienvenida",
   );
-  const [saved, setSaved] = useState(safeRead);
-  const profile = {
-    name: "Alex",
-    lastname: "",
-    email: "alex@ejemplo.com",
-    specialty: "Medicina Interna",
-    target: "2027",
-    plan: "Básico",
-    ...saved.profile,
-  };
-  const marked = Array.isArray(saved.marked) ? saved.marked : [1, 3];
-  const history = Array.isArray(saved.history) ? saved.history : [];
-  const completed = Array.isArray(saved.completed) ? saved.completed : [0, 1];
+  const [saved, setSaved] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [connectionError, setConnectionError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [toast, setToast] = useState("");
   const [modal, setModal] = useState(null);
   const [session, setSession] = useState(null);
+  const [result, setResult] = useState(null);
+  const [resultError, setResultError] = useState("");
   const toastTimer = useRef(null);
+  const profile = saved?.profile;
+  const marked = saved?.marked || [];
+  const history = saved?.history || [];
+  const completed = saved?.completed || [];
+  const isPublic =
+    ["/bienvenida", "/login", "/registro", "/recuperar"].includes(route) ||
+    route.startsWith("/restablecer");
+  const go = (path) => {
+    window.location.hash = path;
+  };
+  const notify = (text) => {
+    setToast(text);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(""), 5000);
+  };
+  const accept = (data) => {
+    setSaved(data);
+    setSession(data.activeSession);
+  };
+  const restore = async () => {
+    setLoading(true);
+    setConnectionError("");
+    try {
+      accept(await api.restore());
+    } catch (error) {
+      if (error.status !== 401) setConnectionError(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    restore();
+    return () => clearTimeout(toastTimer.current);
+  }, []);
   useEffect(() => {
     const change = () => {
       setRoute(window.location.hash.slice(1) || "/bienvenida");
@@ -295,110 +326,133 @@ export default function App() {
     return () => window.removeEventListener("hashchange", change);
   }, []);
   useEffect(() => {
-    try {
-      localStorage.setItem("entrenarme-demo-v1", JSON.stringify(saved));
-    } catch {
-      /* Browsing remains available without storage. */
-    }
-  }, [saved]);
-  useEffect(() => {
-    document.title = `Entrenarme · ${route === "/bienvenida" ? "Entrena tu mente" : navItems.find((n) => route.startsWith(n.path))?.name || "Tu entrenamiento"}`;
+    document.title = `Entrenarme · ${navItems.find((n) => route.startsWith(n.path))?.name || "Tu entrenamiento"}`;
     document.querySelector("main")?.focus({ preventScroll: true });
-  }, [route]);
-  useEffect(() => () => clearTimeout(toastTimer.current), []);
-  const notify = (text) => {
-    setToast(text);
-    clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(""), 4200);
-  };
-  const go = (path) => {
-    if (route === path) {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      return;
+    if (!loading && !connectionError && !profile && !isPublic) go("/login");
+    if (!loading && profile && ["/login", "/registro"].includes(route))
+      go("/inicio");
+  }, [route, loading, profile, isPublic, connectionError]);
+  useEffect(() => {
+    let active = true;
+    setResult(null);
+    setResultError("");
+    if (profile && route.startsWith("/resultados/"))
+      api
+        .session(route.split("/")[2])
+        .then((data) => {
+          if (active) {
+            if (data.status === "completed") setResult(data);
+            else setResultError("Esta actividad aún no tiene resultados.");
+          }
+        })
+        .catch((error) => {
+          if (active) setResultError(error.message);
+        });
+    return () => {
+      active = false;
+    };
+  }, [route, profile?.id]);
+  const run = async (action) => {
+    if (busyRef.current) return null;
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      return await action();
+    } catch (error) {
+      notify(error.message);
+      if (error.code === "UNAUTHENTICATED") {
+        setSaved(null);
+        setSession(null);
+        setResult(null);
+        go("/login");
+      }
+      return null;
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
     }
-    window.location.hash = path;
   };
+  const authenticate = async (signup, data) => {
+    accept(await api.authenticate(signup, data));
+    go("/inicio");
+  };
+  const updateProfile = (data) =>
+    run(async () => {
+      await api.profile(data);
+      accept(await api.bootstrap());
+      notify("Los cambios se guardaron en tu cuenta.");
+      return true;
+    });
+  const toggleMark = (id) =>
+    run(async () => {
+      await api.mark(id, !marked.includes(id));
+      const data = await api.bootstrap();
+      setSaved(data);
+    });
+  const startSession = (
+    mode,
+    selected = [],
+    mission = null,
+    topics = [],
+    count = 20,
+  ) =>
+    run(async () => {
+      const activity = await api.start({
+        mode,
+        areas: selected,
+        mission,
+        topics,
+        count,
+      });
+      setSession(activity);
+      setModal(null);
+      go("/actividad");
+      setSaved(await api.bootstrap());
+    });
+  const patchSession = (patch) =>
+    run(async () => {
+      const activity = await api.patchSession(session.id, patch);
+      setSession(activity);
+    });
+  const finishActivity = async (id) => {
+    const data = await api.finish(id);
+    setResult(data);
+    accept(await api.bootstrap());
+    setModal(null);
+    go(`/resultados/${id}`);
+  };
+  const finishSession = () => run(() => finishActivity(session.id));
+  const reveal = (id) =>
+    run(async () => setSession(await api.reveal(session.id, id)));
+  const rate = (id, rating) =>
+    run(async () => {
+      const data = await api.rate(session.id, id, rating);
+      setSession(data);
+      if (data.ratedIds.length === data.total) await finishActivity(data.id);
+    });
+  const logout = () =>
+    run(async () => {
+      await api.logout();
+      setSaved(null);
+      setSession(null);
+      setResult(null);
+      setModal(null);
+      go("/login");
+    });
+  const abandon = () =>
+    run(async () => {
+      await api.abandon(session.id);
+      const next = modal.next || "/quizzes";
+      accept(await api.bootstrap());
+      setModal(null);
+      go(next);
+    });
   const navigate = (path) => {
+    if (busyRef.current) return;
     if (route === "/actividad" && session)
       setModal({ type: "exit", next: path });
     else go(path);
   };
-  const updateProfile = (data) =>
-    setSaved((old) => ({ ...old, profile: { ...profile, ...data } }));
-  const toggleMark = (id) => {
-    setSaved((old) => ({
-      ...old,
-      marked: (old.marked || [1, 3]).includes(id)
-        ? (old.marked || [1, 3]).filter((x) => x !== id)
-        : [...(old.marked || [1, 3]), id],
-    }));
-  };
-  const startSession = (mode, selected = [], mission = null, topics = []) => {
-    const pool =
-      mode === "flashcards"
-        ? questions.filter((q) => marked.includes(q.id))
-        : questions.filter(
-            (q) =>
-              (!selected.length || selected.includes(q.area)) &&
-              (!topics.length || topics.includes(q.topic)),
-          );
-    if (!pool.length) {
-      notify(
-        mode === "flashcards"
-          ? "Marca una pregunta para crear tu primera flashcard."
-          : "Elige otro tema para encontrar preguntas de ejemplo.",
-      );
-      return;
-    }
-    setSession({
-      mode,
-      questions: pool,
-      answers: {},
-      current: 0,
-      mission,
-      ratings: [],
-      started: Date.now(),
-    });
-    go("/actividad");
-  };
-  const finishSession = () => {
-    if (!session) return;
-    const isCards = ["flashcards", "inteligente"].includes(session.mode);
-    const correct = isCards
-      ? session.ratings.filter((r) => r === "Fácil").length
-      : session.questions.filter((q) => session.answers[q.id] === q.answer)
-          .length;
-    const result = {
-      ...session,
-      id: String(Date.now()),
-      title:
-        session.mission !== null
-          ? missions[session.mission]
-          : activities.find((a) => a.id === session.mode)?.title ||
-            "Entrenamiento",
-      date: "Ahora",
-      total: session.questions.length,
-      correct,
-      score: Math.round((correct / session.questions.length) * 100),
-      isCards,
-    };
-    setSaved((old) => ({
-      ...old,
-      history: [result, ...(old.history || [])].slice(0, 30),
-      completed:
-        session.mission !== null
-          ? [...new Set([...(old.completed || [0, 1]), session.mission])]
-          : old.completed || [0, 1],
-    }));
-    setSession(null);
-    go(`/resultados/${result.id}`);
-  };
-  const isPublic = [
-    "/bienvenida",
-    "/login",
-    "/registro",
-    "/recuperar",
-  ].includes(route);
   const activeNav =
     route.startsWith("/quizzes") ||
     ["/actividad", "/marcadas"].includes(route) ||
@@ -408,25 +462,30 @@ export default function App() {
           ["/planes", "/configuracion", "/ayuda"].includes(route)
         ? "/perfil"
         : route;
-  const result =
-    history.find((h) => h.id === route.split("/")[2]) || history[0];
-
   let content;
-  if (route === "/bienvenida") content = <Landing go={go} />;
-  else if (
-    route === "/login" ||
-    route === "/registro" ||
-    route === "/recuperar"
-  )
+  if (loading)
     content = (
-      <Auth
-        key={route}
-        route={route}
-        go={go}
-        updateProfile={updateProfile}
-        notify={notify}
+      <EmptyState
+        title="Conectando con tu espacio"
+        text="Estamos recuperando tu sesión."
       />
     );
+  else if (connectionError)
+    content = (
+      <EmptyState
+        title="No pudimos conectar"
+        text={connectionError}
+        action="Reintentar"
+        onClick={restore}
+      />
+    );
+  else if (route === "/bienvenida") content = <Landing go={go} />;
+  else if (isPublic)
+    content = (
+      <Auth key={route} route={route} go={go} authenticate={authenticate} />
+    );
+  else if (!profile)
+    content = <EmptyState title="Inicia sesión para continuar" />;
   else if (route === "/inicio")
     content = (
       <Dashboard
@@ -435,11 +494,13 @@ export default function App() {
         completed={completed}
         go={go}
         openModal={setModal}
+        stats={saved.stats}
+        activeSession={session}
       />
     );
   else if (route === "/quizzes") content = <QuizHub go={go} />;
   else if (route === "/quizzes/historial")
-    content = <HistoryPage history={history} go={go} openModal={setModal} />;
+    content = <HistoryPage history={history} go={go} />;
   else if (route.startsWith("/quizzes/"))
     content = (
       <QuizSetup
@@ -448,13 +509,17 @@ export default function App() {
         marked={marked}
         start={startSession}
         go={go}
+        catalog={saved.catalog}
       />
     );
   else if (route === "/actividad")
     content = session ? (
       <QuizRunner
         session={session}
-        setSession={setSession}
+        patchSession={patchSession}
+        reveal={reveal}
+        rate={rate}
+        busy={busy}
         marked={marked}
         toggleMark={toggleMark}
         finish={finishSession}
@@ -463,7 +528,7 @@ export default function App() {
     ) : (
       <EmptyState
         title="Tu siguiente reto te espera"
-        text="Elige una actividad para comenzar a entrenar."
+        text="Elige una actividad para comenzar."
         action="Explorar quizzes"
         onClick={() => go("/quizzes")}
       />
@@ -471,6 +536,7 @@ export default function App() {
   else if (route.startsWith("/resultados/"))
     content = result ? (
       <Results
+        key={result.id}
         result={result}
         go={go}
         marked={marked}
@@ -478,60 +544,57 @@ export default function App() {
       />
     ) : (
       <EmptyState
-        title="Cada historia tiene un comienzo"
-        text="Completa un quiz para ver aquí tu resultado."
-        action="Hacer mi primer quiz"
-        onClick={() => go("/quizzes")}
+        title={
+          resultError
+            ? "No pudimos abrir el resultado"
+            : "Cargando tu resultado"
+        }
+        text={resultError}
+        action={resultError ? "Ver historial" : undefined}
+        onClick={() => go("/quizzes/historial")}
       />
     );
   else if (route === "/enarmapa")
-    content = <Roadmap completed={completed} openModal={setModal} />;
+    content = (
+      <Roadmap
+        completed={completed}
+        streak={saved.stats.streak}
+        openModal={setModal}
+      />
+    );
   else if (route === "/estadisticas")
-    content = <Stats history={history} openModal={setModal} />;
+    content = <Stats initialStats={saved.stats} notify={notify} />;
   else if (route === "/perfil")
     content = (
       <Profile profile={profile} marked={marked} go={go} openModal={setModal} />
     );
-  else if (route === "/planes")
-    content = (
-      <Plans
-        profile={profile}
-        select={(plan) => {
-          updateProfile({ plan });
-          notify(
-            `Plan ${plan} activado en la demo. No se realizó ningún cobro.`,
-          );
-          go("/perfil");
-        }}
-      />
-    );
+  else if (route === "/planes") content = <Plans profile={profile} />;
   else if (route === "/configuracion")
     content = (
       <SettingsPage
         profile={profile}
         saved={saved}
-        setSaved={setSaved}
         updateProfile={updateProfile}
-        notify={notify}
         go={go}
-        reset={() => setModal({ type: "reset", title: "¿Empezamos de nuevo?" })}
       />
     );
   else if (route === "/ayuda") content = <Help go={go} />;
   else if (route === "/marcadas")
-    content = <Marked marked={marked} toggleMark={toggleMark} go={go} />;
+    content = (
+      <Marked list={saved.markedQuestions} toggleMark={toggleMark} go={go} />
+    );
   else
     content = (
       <EmptyState
         title="Tomemos otra ruta"
-        text="Esta pantalla no forma parte del recorrido."
         action="Volver al inicio"
         onClick={() => go("/inicio")}
       />
     );
-
+  const shell = !loading && !connectionError && !isPublic && profile;
+  const resource = saved?.resources;
   return (
-    <>
+    <BusyContext.Provider value={busy}>
       <a
         className="skip-link"
         href="#main-content"
@@ -542,9 +605,7 @@ export default function App() {
       >
         Saltar al contenido
       </a>
-      {isPublic ? (
-        content
-      ) : (
+      {shell ? (
         <div className="app-shell">
           <aside className="sidebar">
             <Logo onClick={() => navigate("/inicio")} />
@@ -572,10 +633,16 @@ export default function App() {
                   Conoce Premium <ArrowUpRight size={16} />
                 </button>
               </div>
-              <button className="sidebar-help" onClick={() => go("/ayuda")}>
+              <button
+                className="sidebar-help"
+                onClick={() => navigate("/ayuda")}
+              >
                 <CircleHelp size={18} /> ¿Necesitas una mano?
               </button>
-              <button className="sidebar-profile" onClick={() => go("/perfil")}>
+              <button
+                className="sidebar-profile"
+                onClick={() => navigate("/perfil")}
+              >
                 <span className="avatar">
                   {profile.name.charAt(0).toUpperCase()}
                 </span>
@@ -600,16 +667,19 @@ export default function App() {
                   className="token-pill"
                   onClick={() => setModal({ type: "tokens" })}
                 >
-                  <Zap size={16} fill="currentColor" /> 10 <span>tokens</span>
+                  <Zap size={16} fill="currentColor" />{" "}
+                  {resource.unlimited
+                    ? "∞"
+                    : resource.dailyTokens + resource.bonusTokens}{" "}
+                  <span>tokens</span>
                   <ChevronDown size={13} />
                 </button>
                 <button
                   className="notification-button icon-button"
                   onClick={() => setModal({ type: "notifications" })}
-                  aria-label="Ver notificaciones"
+                  aria-label="Ver novedades"
                 >
                   <Bell size={20} />
-                  <i />
                 </button>
                 <button
                   className="avatar small-avatar"
@@ -623,13 +693,17 @@ export default function App() {
             <main
               id="main-content"
               tabIndex={-1}
+              aria-busy={busy}
               className={`main-content ${route === "/actividad" ? "runner-main" : ""}`}
             >
               {content}
               <footer className="app-footer">
                 <span>Hecho para tu próxima gran meta.</span>
                 <span>
-                  <i /> Demo interactiva · datos de ejemplo
+                  <i />{" "}
+                  {saved.catalog.hasSamples
+                    ? "Banco de prueba"
+                    : "Tu progreso se guarda en tu cuenta"}
                 </span>
               </footer>
             </main>
@@ -648,6 +722,8 @@ export default function App() {
             ))}
           </nav>
         </div>
+      ) : (
+        content
       )}
       <div
         className={`toast ${toast ? "show" : ""}`}
@@ -656,12 +732,12 @@ export default function App() {
       >
         {toast && (
           <>
-            <CheckCircle2 size={19} />
+            <CircleHelp size={19} />
             {toast}
           </>
         )}
       </div>
-      {modal && (
+      {modal && shell && (
         <Modal
           title={
             modal.title ||
@@ -673,44 +749,37 @@ export default function App() {
               exit: "¿Salir del entrenamiento?",
               finish: "¿Terminamos por hoy?",
               questionMap: "Mapa de preguntas",
-              logout: "¿Cerrar tu sesión de demo?",
-              sample: "Una mirada a tu entrenamiento",
+              logout: "¿Cerrar tu sesión?",
               score: "Tu promedio, paso a paso",
               achievement: "¡Vas construyendo tu camino!",
             }[modal.type] ||
             "Un poco más de detalle"
           }
-          close={() => setModal(null)}
+          close={() => !busy && setModal(null)}
         >
           {modal.type === "tokens" && (
             <>
               <div className="token-large">
                 <Zap />
-                10 <small>tokens diarios</small>
+                {resource.dailyTokens}
+                <small>tokens diarios disponibles</small>
               </div>
               <p>
-                Úsalos para hacer quizzes y repasar. Los Tokens+ reconocen tu
-                constancia y los comodines te ayudan a cuidar tu racha.
+                Recibes 10 tokens cada día. Se consume un token por cada cinco
+                preguntas o tarjetas, redondeando hacia arriba. Las misiones son
+                gratuitas.
               </p>
               <div className="modal-metrics">
                 <div>
-                  <strong>2</strong>
-                  <span>Comodines</span>
-                </div>
-                <div>
-                  <strong>5</strong>
-                  <span>Tokens+</span>
+                  <strong>{resource.bonusTokens}</strong>
+                  <span>Tokens+ por misiones</span>
                 </div>
               </div>
-              <p className="muted small-text">
-                En este mockup, los tokens son ilustrativos y no se descuentan.
-              </p>
               <Button
                 onClick={() => {
                   setModal(null);
-                  go("/quizzes");
+                  navigate("/quizzes");
                 }}
-                icon="ArrowRight"
               >
                 Vamos a entrenar
               </Button>
@@ -719,29 +788,17 @@ export default function App() {
           {modal.type === "notifications" && (
             <div className="notice-list">
               <div>
-                <span className="icon-tile lime">
-                  <Flame />
-                </span>
-                <div>
-                  <strong>Tu racha te está esperando</strong>
-                  <p>
-                    Un pequeño entrenamiento puede hacer una gran diferencia.
-                  </p>
-                  <small>Hoy · Ejemplo</small>
-                </div>
-              </div>
-              <div>
                 <span className="icon-tile cyan">
                   <Map />
                 </span>
                 <div>
                   <strong>Tu ruta está lista</strong>
-                  <p>Continúa con tu misión en ENARMapa.</p>
+                  <p>{completed.length} de 7 misiones completadas.</p>
                   <button
                     className="text-link"
                     onClick={() => {
                       setModal(null);
-                      go("/enarmapa");
+                      navigate("/enarmapa");
                     }}
                   >
                     Ver mi ruta <ArrowRight size={14} />
@@ -755,26 +812,26 @@ export default function App() {
               <Tag color="cyan">SEMANA 01 · DÍA {modal.day + 1}</Tag>
               <h3 className="modal-big-title">{missions[modal.day]}</h3>
               <p>
-                {modal.day === 6
-                  ? "Repasa lo aprendido y celebra tu avance de esta semana."
-                  : "Pon a prueba lo que sabes y descubre tu siguiente oportunidad de mejorar."}
+                Entrena con las preguntas disponibles para esta misión. Responde
+                todas para completar el día y desbloquear el siguiente.
               </p>
               <div className="session-facts">
                 <span>
-                  <BookOpen size={17} /> 5 preguntas de muestra
+                  <BookOpen size={17} /> Hasta 20 preguntas
                 </span>
                 <span>
-                  <Clock3 size={17} /> ~3 minutos
+                  <Zap size={17} /> Sin costo de tokens
                 </span>
               </div>
               <Button
                 className="full"
-                icon="ArrowRight"
-                onClick={() => {
-                  const day = modal.day;
-                  setModal(null);
-                  startSession(day === 6 ? "inteligente" : "rapido", [], day);
-                }}
+                onClick={() =>
+                  startSession(
+                    modal.day === 6 ? "inteligente" : "rapido",
+                    [],
+                    modal.day,
+                  )
+                }
               >
                 Comenzar misión
               </Button>
@@ -787,8 +844,7 @@ export default function App() {
               </div>
               <p>
                 Completa las misiones anteriores para desbloquear{" "}
-                <strong>{missions[modal.day]}</strong>. Cada día de práctica te
-                acerca a tu meta.
+                <strong>{missions[modal.day]}</strong>.
               </p>
               <Button className="full" onClick={() => setModal(null)}>
                 Entendido
@@ -798,23 +854,22 @@ export default function App() {
           {modal.type === "exit" && (
             <>
               <p>
-                Se perderán las respuestas de esta sesión. Puedes quedarte y
-                terminar tu entrenamiento.
+                Puedes dejar esta actividad pendiente y retomarla después, o
+                cerrarla sin calificar. Los tokens ya utilizados no se
+                devuelven.
               </p>
               <div className="modal-actions">
+                <Button secondary onClick={abandon}>
+                  Cerrar actividad
+                </Button>
                 <Button
-                  secondary
                   onClick={() => {
-                    const next = modal.next || "/quizzes";
-                    setSession(null);
+                    const next = modal.next || "/inicio";
                     setModal(null);
                     go(next);
                   }}
                 >
-                  Salir de la actividad
-                </Button>
-                <Button onClick={() => setModal(null)}>
-                  Seguir entrenando
+                  Guardar y salir
                 </Button>
               </div>
             </>
@@ -825,183 +880,88 @@ export default function App() {
                 Has respondido{" "}
                 <strong>
                   {Object.keys(session?.answers || {}).length} de{" "}
-                  {session?.questions.length}
+                  {session?.total}
                 </strong>{" "}
-                preguntas. Las que queden sin responder no sumarán aciertos.
+                preguntas. Las que queden sin responder cuentan como errores.
+                Para completar una misión debes responder todas.
               </p>
               <div className="modal-actions">
                 <Button secondary onClick={() => setModal(null)}>
                   Continuar
                 </Button>
-                <Button
-                  onClick={() => {
-                    setModal(null);
-                    finishSession();
-                  }}
-                >
-                  Ver resultados
-                </Button>
+                <Button onClick={finishSession}>Ver resultados</Button>
               </div>
             </>
           )}
           {modal.type === "questionMap" && (
             <>
-              <p>Salta a una pregunta para continuar o revisar tu respuesta.</p>
+              <p>Salta a una pregunta para revisar tu respuesta.</p>
               <div className="question-map">
                 {session?.questions.map((q, i) => (
                   <button
                     key={q.id}
-                    className={`${session.current === i ? "current" : ""} ${session.answers[q.id] !== undefined ? "answered" : ""}`}
-                    onClick={() => {
-                      setSession((s) => ({ ...s, current: i }));
+                    disabled={busy}
+                    className={
+                      session.answers[q.id] !== undefined ? "answered" : ""
+                    }
+                    onClick={async () => {
+                      await patchSession({ current: i });
                       setModal(null);
                     }}
                   >
                     {i + 1}
-                    {marked.includes(q.id) && <Bookmark size={11} />}
                   </button>
                 ))}
-              </div>
-              <p className="small-text muted">
-                Morado: pregunta actual · Lima: respondida
-              </p>
-            </>
-          )}
-          {modal.type === "reset" && (
-            <>
-              <p>
-                Se restablecerán el perfil, las preferencias y los resultados de
-                prueba de este navegador a los datos de ejemplo iniciales.
-              </p>
-              <div className="modal-actions">
-                <Button secondary onClick={() => setModal(null)}>
-                  Conservar mi avance
-                </Button>
-                <Button
-                  onClick={() => {
-                    setSaved({});
-                    setSession(null);
-                    setModal(null);
-                    go("/bienvenida");
-                    notify("La demo está lista para empezar de nuevo.");
-                  }}
-                >
-                  Reiniciar demo
-                </Button>
               </div>
             </>
           )}
           {modal.type === "logout" && (
             <>
-              <p>
-                Tu progreso de ejemplo seguirá disponible en este navegador.
-              </p>
+              <p>Tu progreso seguirá guardado en tu cuenta.</p>
               <div className="modal-actions">
                 <Button secondary onClick={() => setModal(null)}>
                   Volver
                 </Button>
-                <Button
-                  onClick={() => {
-                    setModal(null);
-                    go("/login");
-                  }}
-                >
-                  Cerrar sesión
-                </Button>
+                <Button onClick={logout}>Cerrar sesión</Button>
               </div>
-            </>
-          )}
-          {modal.type === "sample" && (
-            <>
-              <Tag color="cyan">SESIÓN DE EJEMPLO</Tag>
-              <h3 className="modal-big-title">{modal.item.title}</h3>
-              <div className="modal-metrics">
-                <div>
-                  <strong>{modal.item.score}%</strong>
-                  <span>Resultado</span>
-                </div>
-                <div>
-                  <strong>
-                    {modal.item.correct}/{modal.item.total}
-                  </strong>
-                  <span>Aciertos</span>
-                </div>
-              </div>
-              <p>
-                Esta sesión ilustra cómo se verá tu historial. Completa un quiz
-                de la demo para revisar tus propias respuestas.
-              </p>
-              <Button
-                icon="ArrowRight"
-                onClick={() => {
-                  setModal(null);
-                  go("/quizzes/rapido");
-                }}
-              >
-                Hacer un quiz
-              </Button>
             </>
           )}
           {modal.type === "score" && (
             <>
+              <span className="icon-tile cyan">
+                <Target />
+              </span>
               <p>
-                En la aplicación final, el promedio actual considera las últimas
-                280 preguntas calificadas y revisadas.
+                Tu promedio actual usa las últimas 280 preguntas calificadas, o
+                todas si aún no llegas a esa cantidad. Las tarjetas no modifican
+                tu calificación.
               </p>
               <p>
-                La demo comienza con datos ilustrativos. Después de completar un
-                quiz, verás el resultado de tu última sesión de muestra.
+                Los resultados y las estadísticas se calculan en el servidor.
               </p>
-              <Button onClick={() => setModal(null)}>¡Vamos por más!</Button>
             </>
           )}
           {modal.type === "achievement" && (
             <>
-              <div className="empty-icon">
-                <Trophy />
-              </div>
+              <Mascot name="celebrate" className="celebration-mascot" />
+              <h3>{completed.length} de 7 misiones completadas</h3>
               <p>
-                Completa los siete días del ENARMapa para conseguir tu insignia{" "}
-                <strong>Primer mapa clínico</strong>.
-              </p>
-              <Progress value={(completed.length / 7) * 100} />
-              <p className="small-text muted">
-                {completed.length} de 7 misiones completadas
+                Termina cada misión para obtener Tokens+ y desbloquear el
+                siguiente día.
               </p>
               <Button
                 onClick={() => {
                   setModal(null);
-                  go("/enarmapa");
+                  navigate("/enarmapa");
                 }}
               >
-                Ver mi ENARMapa
-              </Button>
-            </>
-          )}
-          {modal.type === "area" && (
-            <>
-              <Tag color={modal.area.color}>{modal.area.name}</Tag>
-              <h3 className="modal-big-title">
-                Siempre hay espacio para crecer.
-              </h3>
-              <p>
-                Tu desempeño de ejemplo en esta área es del {modal.area.score}%.
-                Entrena por tema para afianzar tus conocimientos.
-              </p>
-              <Button
-                icon="ArrowRight"
-                onClick={() => {
-                  setModal(null);
-                  go("/quizzes/personalizado");
-                }}
-              >
-                Personalizar un quiz
+                Continuar mi ruta
               </Button>
             </>
           )}
         </Modal>
       )}
-    </>
+    </BusyContext.Provider>
   );
 }
 
@@ -1041,8 +1001,8 @@ function Landing({ go }) {
               <Button icon="ArrowRight" onClick={() => go("/registro")}>
                 Comenzar mi entrenamiento
               </Button>
-              <button className="explore-demo" onClick={() => go("/inicio")}>
-                Explorar la demo <ArrowUpRight size={17} />
+              <button className="explore-demo" onClick={() => go("/registro")}>
+                Crear mi espacio <ArrowUpRight size={17} />
               </button>
             </div>
             <div className="hero-note">
@@ -1147,61 +1107,82 @@ function Landing({ go }) {
           <i /> Mockup interactivo
         </span>
         <button onClick={() => go("/ayuda")}>
-          Sobre esta demo <ArrowUpRight size={13} />
+          Conoce Entrenarme <ArrowUpRight size={13} />
         </button>
       </footer>
     </div>
   );
 }
 
-function Auth({ route, go, updateProfile, notify }) {
+function Auth({ route, go, authenticate }) {
   const signup = route === "/registro";
   const recovery = route === "/recuperar";
+  const reset = route.startsWith("/restablecer");
+  const token = reset
+    ? new URLSearchParams(route.split("?")[1] || "").get("token")
+    : null;
   const [step, setStep] = useState(0);
   const [sent, setSent] = useState(false);
-  const [plan, setPlan] = useState("Básico");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [remember, setRemember] = useState(false);
   const [form, setForm] = useState({
     name: "",
     lastname: "",
     email: "",
     password: "",
+    confirmation: "",
     specialty: "Medicina Interna",
     target: "2027",
   });
-  const change = (e) =>
-    setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
-  const submit = (e) => {
-    e.preventDefault();
-    if (recovery) {
-      setSent(true);
-      return;
-    }
+  const change = (event) =>
+    setForm((old) => ({ ...old, [event.target.name]: event.target.value }));
+  const submit = async (event) => {
+    event.preventDefault();
+    if (busy) return;
+    setError("");
     if (signup && step < 2) {
-      setStep((s) => s + 1);
+      setStep(step + 1);
       return;
     }
-    updateProfile({
-      name: signup ? form.name.trim() || "Alex" : "Alex",
-      lastname: form.lastname.trim(),
-      email: form.email,
-      specialty: form.specialty,
-      target: form.target,
-      plan,
-    });
-    notify(
-      signup
-        ? "¡Tu perfil de demo está listo! Vamos paso a paso."
-        : "¡Qué bueno tenerte de vuelta!",
-    );
-    go("/inicio");
+    if (reset && form.password !== form.confirmation) {
+      setError("Las contraseñas no coinciden.");
+      return;
+    }
+    setBusy(true);
+    try {
+      if (recovery) {
+        await api.forgot(form.email);
+        setSent(true);
+      } else if (reset) {
+        await api.reset({ token: token || "", password: form.password });
+        setSent(true);
+      } else {
+        const { confirmation, ...registration } = form;
+        await authenticate(
+          signup,
+          signup
+            ? registration
+            : { email: form.email, password: form.password, remember },
+        );
+      }
+    } catch (error) {
+      setError(error.message);
+    } finally {
+      setBusy(false);
+    }
   };
+  const titles = signup
+    ? ["CREA TU CUENTA.", "ELIGE TU PLAN.", "HABLEMOS DE TU META."]
+    : null;
   return (
     <div className="auth-page">
       <header className="auth-header">
         <Logo onClick={() => go("/bienvenida")} />
         <button
           className="back-link"
-          onClick={() => (step > 0 ? setStep((s) => s - 1) : go("/bienvenida"))}
+          disabled={busy}
+          onClick={() => (step > 0 ? setStep(step - 1) : go("/bienvenida"))}
         >
           <ArrowLeft size={17} /> Volver
         </button>
@@ -1209,74 +1190,51 @@ function Auth({ route, go, updateProfile, notify }) {
       <main id="main-content" tabIndex={-1} className="auth-main">
         <section className="auth-card">
           <div className="eyebrow">
-            {recovery
+            {recovery || reset
               ? "VOLVAMOS A CONECTAR"
               : signup
                 ? "TU SIGUIENTE CAPÍTULO"
                 : "BIENVENIDO DE VUELTA"}
           </div>
           <h1>
-            {recovery ? (
-              <>
-                RECUPERA
-                <br />
-                <span>TU ACCESO.</span>
-              </>
-            ) : signup ? (
-              step === 0 ? (
-                <>
-                  CREA TU
-                  <br />
-                  <span>CUENTA.</span>
-                </>
-              ) : step === 1 ? (
-                <>
-                  ELIGE
-                  <br />
-                  <span>TU PLAN.</span>
-                </>
-              ) : (
-                <>
-                  HABLEMOS
-                  <br />
-                  <span>DE TU META.</span>
-                </>
-              )
-            ) : (
-              <>
-                SIGAMOS
-                <br />
-                <span>CRECIENDO.</span>
-              </>
-            )}
+            {reset
+              ? "UNA NUEVA CONTRASEÑA."
+              : recovery
+                ? "RECUPERA TU ACCESO."
+                : signup
+                  ? titles[step]
+                  : "SIGAMOS CRECIENDO."}
           </h1>
           <p className="auth-description">
             {recovery
-              ? "Te ayudamos a retomar tu entrenamiento."
-              : signup
-                ? [
-                    "El primer paso hacia tu próxima gran meta.",
-                    "Elige cómo quieres empezar. Puedes cambiarlo después.",
-                    "Personaliza tu camino hacia la residencia.",
-                  ][step]
-                : "Tu próxima gran conquista empieza con una sesión más."}
+              ? "Te enviaremos un enlace para retomar tu entrenamiento."
+              : reset
+                ? "Elige una contraseña de al menos 10 caracteres."
+                : signup
+                  ? [
+                      "El primer paso hacia tu próxima gran meta.",
+                      "Comienza con el plan gratuito.",
+                      "Personaliza tu camino hacia la residencia.",
+                    ][step]
+                  : "Tu próxima gran conquista empieza con una sesión más."}
           </p>
           {sent ? (
             <div className="recovery-success">
               <div className="empty-icon">
                 <Mail />
               </div>
-              <h2>Así se vería la confirmación</h2>
+              <h2>{reset ? "Contraseña actualizada" : "Revisa tu correo"}</h2>
               <p>
-                En la aplicación final, recibirías un enlace en tu correo para
-                recuperar el acceso. Esta demo no envía mensajes.
+                {reset
+                  ? "Inicia sesión con tu nueva contraseña."
+                  : "Si el correo tiene una cuenta, recibirás un enlace para recuperar tu acceso. El enlace dura 30 minutos."}
               </p>
               <Button className="full" onClick={() => go("/login")}>
                 Volver a iniciar sesión
               </Button>
             </div>
           ) : (
-            <form onSubmit={submit}>
+            <form onSubmit={submit} aria-busy={busy}>
               {(!signup || step === 0) && (
                 <>
                   {signup && (
@@ -1285,55 +1243,77 @@ function Auth({ route, go, updateProfile, notify }) {
                         label="Nombre"
                         name="name"
                         autoComplete="given-name"
-                        placeholder="Alex"
                         value={form.name}
                         onChange={change}
                         required
-                        maxLength={35}
+                        maxLength={60}
                       />
                       <Field
                         label="Apellidos"
                         name="lastname"
                         autoComplete="family-name"
-                        placeholder="García"
                         value={form.lastname}
                         onChange={change}
-                        required
                         maxLength={60}
                       />
                     </div>
                   )}
-                  <Field
-                    label="Correo electrónico"
-                    icon="Mail"
-                    name="email"
-                    type="email"
-                    autoComplete="email"
-                    placeholder="tu@correo.com"
-                    value={form.email}
-                    onChange={change}
-                    required
-                  />
+                  {!reset && (
+                    <Field
+                      label="Correo electrónico"
+                      icon="Mail"
+                      name="email"
+                      type="email"
+                      autoComplete="email"
+                      placeholder="tu@correo.com"
+                      value={form.email}
+                      onChange={change}
+                      required
+                      maxLength={254}
+                    />
+                  )}
                   {!recovery && (
                     <Password
+                      label={
+                        signup || reset ? "Crea una contraseña" : "Contraseña"
+                      }
                       name="password"
-                      label={signup ? "Crea una contraseña" : "Contraseña"}
                       autoComplete={
-                        signup ? "new-password" : "current-password"
+                        signup || reset ? "new-password" : "current-password"
                       }
                       placeholder={
-                        signup ? "Al menos 8 caracteres" : "Tu contraseña"
+                        signup || reset
+                          ? "Al menos 10 caracteres"
+                          : "Tu contraseña"
                       }
                       value={form.password}
                       onChange={change}
-                      minLength={signup ? 8 : 1}
+                      minLength={signup || reset ? 10 : 1}
+                      maxLength={128}
                       required
                     />
                   )}
-                  {!signup && !recovery && (
+                  {reset && (
+                    <Password
+                      label="Confirma tu contraseña"
+                      name="confirmation"
+                      autoComplete="new-password"
+                      value={form.confirmation}
+                      onChange={change}
+                      minLength={10}
+                      maxLength={128}
+                      required
+                    />
+                  )}
+                  {!signup && !recovery && !reset && (
                     <div className="form-extras">
                       <label className="checkbox-label">
-                        <input type="checkbox" /> Recordarme
+                        <input
+                          type="checkbox"
+                          checked={remember}
+                          onChange={(e) => setRemember(e.target.checked)}
+                        />{" "}
+                        Recordarme
                       </label>
                       <button type="button" onClick={() => go("/recuperar")}>
                         Olvidé mi contraseña
@@ -1344,29 +1324,27 @@ function Auth({ route, go, updateProfile, notify }) {
               )}
               {signup && step === 1 && (
                 <div className="signup-plans">
-                  {["Básico", "Premium"].map((p) => (
+                  {["Básico", "Premium"].map((plan, i) => (
                     <button
-                      key={p}
                       type="button"
-                      className={`signup-plan ${plan === p ? "selected" : ""}`}
-                      onClick={() => setPlan(p)}
+                      disabled={!!i}
+                      key={plan}
+                      className={`signup-plan ${i ? "" : "selected"}`}
                     >
                       <div>
-                        <span
-                          className={`radio-dot ${plan === p ? "checked" : ""}`}
-                        />
-                        <strong>{p}</strong>
-                        {p === "Premium" && <Crown size={18} />}
+                        <span className={`radio-dot ${i ? "" : "checked"}`} />
+                        <strong>{plan}</strong>
+                        {!!i && <Crown size={18} />}
                       </div>
                       <p>
-                        {p === "Básico"
-                          ? "Empieza con quizzes, flashcards y tu mapa de estudio."
-                          : "Explora todas las herramientas de tu preparación."}
+                        {i
+                          ? "Más herramientas para tu preparación."
+                          : "Quizzes, flashcards y tu mapa de estudio."}
                       </p>
                       <span>
-                        {p === "Básico"
-                          ? "Gratis para comenzar"
-                          : "Prueba visual · sin cobros"}
+                        {i
+                          ? "Próximamente"
+                          : "Gratis para comenzar · 10 tokens diarios"}
                       </span>
                     </button>
                   ))}
@@ -1390,9 +1368,9 @@ function Auth({ route, go, updateProfile, notify }) {
                   <label className="field">
                     <span>¿Cuándo presentarás el ENARM?</span>
                     <select name="target" value={form.target} onChange={change}>
-                      <option>2026</option>
-                      <option>2027</option>
-                      <option>2028</option>
+                      {["2026", "2027", "2028", "2029"].map((year) => (
+                        <option key={year}>{year}</option>
+                      ))}
                     </select>
                   </label>
                   <div className="callout">
@@ -1415,36 +1393,45 @@ function Auth({ route, go, updateProfile, notify }) {
                   <small>Paso {step + 1} de 3</small>
                 </div>
               )}
-              <Button type="submit" className="full" icon="ArrowRight">
-                {recovery
-                  ? "Simular recuperación"
-                  : signup
-                    ? step < 2
-                      ? "Siguiente"
-                      : "Comenzar mi camino"
-                    : "Iniciar sesión"}
+              {error && (
+                <p className="error auth-error" role="alert">
+                  {error}
+                </p>
+              )}
+              <Button
+                className="full"
+                type="submit"
+                disabled={busy}
+                icon="ArrowRight"
+              >
+                {busy
+                  ? "Un momento…"
+                  : reset
+                    ? "Guardar contraseña"
+                    : recovery
+                      ? "Enviar enlace"
+                      : signup
+                        ? step < 2
+                          ? "Siguiente"
+                          : "Comenzar mi camino"
+                        : "Iniciar sesión"}
               </Button>
             </form>
           )}
-          {!recovery && (
-            <>
-              <div className="auth-alternative">
-                {signup ? "¿Ya eres parte?" : "¿Es tu primera vez?"}{" "}
-                <button onClick={() => go(signup ? "/login" : "/registro")}>
-                  {signup ? "Iniciar sesión" : "Crea tu cuenta"}
-                </button>
-              </div>
-              <div className="auth-divider">
-                <span>o echa un vistazo</span>
-              </div>
-              <button className="demo-access" onClick={() => go("/inicio")}>
-                Entrar a la demo sin registro <ArrowUpRight size={16} />
+          {!recovery && !reset && (
+            <div className="auth-alternative">
+              {signup ? "¿Ya eres parte?" : "¿Es tu primera vez?"}{" "}
+              <button
+                disabled={busy}
+                onClick={() => go(signup ? "/login" : "/registro")}
+              >
+                {signup ? "Iniciar sesión" : "Crea tu cuenta"}
               </button>
-            </>
+            </div>
           )}
           <p className="auth-disclaimer">
-            <ShieldCheck size={15} /> Acceso simulado. Usa datos ficticios; no
-            guardamos contraseñas.
+            <ShieldCheck size={15} /> Tu cuenta y tu progreso se guardan de
+            forma privada.
           </p>
         </section>
         <aside className="auth-visual">
@@ -1469,9 +1456,17 @@ function Auth({ route, go, updateProfile, notify }) {
   );
 }
 
-function Dashboard({ profile, history, completed, go, openModal }) {
-  const last = history.find((h) => !h.isCards);
-  const avg = last ? (last.score / 10).toFixed(1) : "8.2";
+function Dashboard({
+  profile,
+  history,
+  completed,
+  go,
+  openModal,
+  stats,
+  activeSession,
+}) {
+  const avg =
+    stats.recentAverage === null ? "—" : stats.recentAverage.toFixed(1);
   const day = Math.min(
     6,
     missions.findIndex((_, i) => !completed.includes(i)) === -1
@@ -1496,6 +1491,19 @@ function Dashboard({ profile, history, completed, go, openModal }) {
           </Tag>
         }
       />
+      {activeSession && (
+        <div className="panel resume-banner">
+          <div>
+            <strong>Tienes un entrenamiento pendiente</strong>
+            <p>
+              {activeSession.title} · {activeSession.total} preguntas
+            </p>
+          </div>
+          <Button icon="ArrowRight" onClick={() => go("/actividad")}>
+            Continuar entrenamiento
+          </Button>
+        </div>
+      )}
       <div className="dashboard-grid">
         <section className="mission-card">
           <div className="mission-copy">
@@ -1510,10 +1518,10 @@ function Dashboard({ profile, history, completed, go, openModal }) {
             <p>{missions[day]}</p>
             <div className="mission-meta">
               <span>
-                <BookOpen size={14} /> 30 preguntas
+                <BookOpen size={14} /> Hasta 20 preguntas
               </span>
               <span>
-                <Clock3 size={14} /> ~20 min
+                <Zap size={14} /> Sin costo de tokens
               </span>
             </div>
             <Button
@@ -1523,7 +1531,7 @@ function Dashboard({ profile, history, completed, go, openModal }) {
               Comenzar misión
             </Button>
             <span className="mission-footnote">
-              En la demo recorrerás 5 preguntas.
+              El tamaño se ajusta al banco disponible.
             </span>
           </div>
           <div className="mission-art">
@@ -1541,21 +1549,30 @@ function Dashboard({ profile, history, completed, go, openModal }) {
             <Tag color="pink">¡SIGUE ASÍ!</Tag>
           </div>
           <div className="streak-number">
-            7 <span>días de racha</span>
+            {stats.streak} <span>días de racha</span>
           </div>
           <p>El hábito hace la diferencia.</p>
           <div className="week-streak">
-            {["L", "M", "M", "J", "V", "S", "D"].map((d, i) => (
+            {stats.weekDays.map((d, i) => (
               <div key={i}>
-                <span>{d}</span>
-                <i className={i === 6 ? "today" : ""}>
-                  {i === 6 ? <Flame size={16} /> : <Check size={14} />}
+                <span>{d.label}</span>
+                <i
+                  className={`${d.today ? "today" : ""} ${d.studied ? "studied" : "rest"}`}
+                >
+                  {d.studied ? (
+                    <Check size={14} />
+                  ) : d.today ? (
+                    <Flame size={16} />
+                  ) : (
+                    "·"
+                  )}
                 </i>
               </div>
             ))}
           </div>
           <small>
-            <ShieldCheck size={13} /> Tienes 2 comodines para cuidar tu racha.
+            <ShieldCheck size={13} /> Completa un entrenamiento para sumar un
+            día.
           </small>
         </section>
       </div>
@@ -1580,7 +1597,7 @@ function Dashboard({ profile, history, completed, go, openModal }) {
             </strong>
           </div>
           <span className="metric-trend">
-            <ArrowUpRight size={14} /> {last ? "Tu sesión" : "+0.6"}
+            <ArrowUpRight size={14} /> Últimas 280
           </span>
         </div>
         <div className="metric-card">
@@ -1588,12 +1605,9 @@ function Dashboard({ profile, history, completed, go, openModal }) {
             <CheckCheck />
           </span>
           <div>
-            <span>Preguntas respondidas</span>
+            <span>Preguntas calificadas</span>
             <strong>
-              {240 +
-                history
-                  .filter((h) => !h.isCards)
-                  .reduce((n, h) => n + h.total, 0)}
+              {stats.total}
               <small> preguntas</small>
             </strong>
           </div>
@@ -1755,7 +1769,7 @@ function QuizHub({ go }) {
   );
 }
 
-function QuizSetup({ mode, marked, start, go }) {
+function QuizSetup({ mode, marked, start, go, catalog }) {
   const a = activities.find((a) => a.id === mode);
   const [count, setCount] = useState(20);
   const [selected, setSelected] = useState([]);
@@ -1774,9 +1788,9 @@ function QuizSetup({ mode, marked, start, go }) {
   const isCards = mode === "flashcards";
   const filteredTopics = [
     ...new Set(
-      questions
+      catalog.topics
         .filter((q) => !selected.length || selected.includes(q.area))
-        .map((q) => q.topic),
+        .map((q) => q.name),
     ),
   ].filter((t) =>
     t.toLocaleLowerCase("es").includes(search.toLocaleLowerCase("es")),
@@ -1810,7 +1824,7 @@ function QuizSetup({ mode, marked, start, go }) {
                   <strong>{n}</strong>
                   <span>{isCards ? "tarjetas" : "preguntas"}</span>
                   <small>
-                    <Zap size={12} /> {n / 5} tokens
+                    <Zap size={12} /> Hasta {n / 5} tokens
                   </small>
                   {count === n && (
                     <CheckCircle2 className="count-check" size={18} />
@@ -1880,7 +1894,7 @@ function QuizSetup({ mode, marked, start, go }) {
                   ))}
                   {!filteredTopics.length && (
                     <p className="muted">
-                      No hay temas de ejemplo con ese nombre.
+                      No hay temas disponibles con ese nombre.
                     </p>
                   )}
                 </div>
@@ -1900,7 +1914,7 @@ function QuizSetup({ mode, marked, start, go }) {
                 {isCards
                   ? `Tienes ${marked.length} preguntas marcadas listas para repasar. Revela cada respuesta y evalúa qué tan fácil fue recordarla.`
                   : mode === "inteligente"
-                    ? "Revela la respuesta y evalúa lo que recuerdas. Este repaso no modifica tu promedio."
+                    ? "Repasa los errores de tus quizzes. Revela la respuesta y evalúa lo que recuerdas; no modifica tu promedio."
                     : "Practica Medicina Interna, Pediatría, Ginecología y Obstetricia, y Cirugía en una sola sesión."}
               </p>
               <div className="distribution-bar">
@@ -1938,8 +1952,9 @@ function QuizSetup({ mode, marked, start, go }) {
           <div className="demo-note">
             <Sparkles size={18} />
             <p>
-              <strong>Un vistazo al recorrido.</strong> Esta demo usa hasta 5
-              preguntas de ejemplo.
+              <strong>Tu sesión real.</strong> Hay {catalog.total} preguntas en
+              el banco. La sesión se ajusta a las preguntas disponibles para tu
+              selección.
             </p>
           </div>
           <Button
@@ -1948,7 +1963,7 @@ function QuizSetup({ mode, marked, start, go }) {
             disabled={
               (isCustom && !selected.length) || (isCards && !marked.length)
             }
-            onClick={() => start(mode, selected, null, topics)}
+            onClick={() => start(mode, selected, null, topics, count)}
           >
             Comenzar {isCards ? "repaso" : "quiz"}
           </Button>
@@ -1973,7 +1988,10 @@ function QuizSetup({ mode, marked, start, go }) {
 
 function QuizRunner({
   session,
-  setSession,
+  patchSession,
+  reveal,
+  rate,
+  busy,
   marked,
   toggleMark,
   finish,
@@ -1981,28 +1999,9 @@ function QuizRunner({
 }) {
   const q = session.questions[session.current];
   const isCards = ["flashcards", "inteligente"].includes(session.mode);
-  const [revealed, setRevealed] = useState(false);
-  const [pendingFinish, setPendingFinish] = useState(false);
-  useEffect(() => {
-    setRevealed(false);
-  }, [session.current]);
-  useEffect(() => {
-    if (pendingFinish) finish();
-  }, [pendingFinish, finish]);
-  const title =
-    session.mission !== null
-      ? missions[session.mission]
-      : activities.find((a) => a.id === session.mode)?.title;
+  const revealed = q.answer !== undefined;
+  const title = session.title;
   const selected = session.answers[q.id];
-  const rate = (rating) => {
-    setSession((s) => ({
-      ...s,
-      ratings: [...s.ratings, rating],
-      current: Math.min(s.current + 1, s.questions.length - 1),
-    }));
-    if (session.current === session.questions.length - 1)
-      setPendingFinish(true);
-  };
   return (
     <div className="quiz-runner">
       <div className="runner-top">
@@ -2043,6 +2042,7 @@ function QuizRunner({
         <Tag color="cyan">{q.area}</Tag>
         <button
           className={`mark-button ${marked.includes(q.id) ? "marked" : ""}`}
+          disabled={busy}
           onClick={() => toggleMark(q.id)}
           aria-pressed={marked.includes(q.id)}
         >
@@ -2073,7 +2073,8 @@ function QuizRunner({
             ) : (
               <button
                 className="reveal-button"
-                onClick={() => setRevealed(true)}
+                disabled={busy}
+                onClick={() => reveal(q.id)}
               >
                 <RotateCcw size={24} />
                 <span>Revelar respuesta</span>
@@ -2086,12 +2087,8 @@ function QuizRunner({
             {q.options.map((o, i) => (
               <button
                 key={o}
-                onClick={() =>
-                  setSession((s) => ({
-                    ...s,
-                    answers: { ...s.answers, [q.id]: i },
-                  }))
-                }
+                disabled={busy}
+                onClick={() => patchSession({ answers: { [q.id]: i } })}
                 aria-pressed={selected === i}
                 className={selected === i ? "selected" : ""}
               >
@@ -2118,7 +2115,8 @@ function QuizRunner({
                 <button
                   key={r.name}
                   className={r.color}
-                  onClick={() => rate(r.name)}
+                  disabled={busy || session.ratedIds.includes(q.id)}
+                  onClick={() => rate(q.id, r.name)}
                 >
                   <Icon name={r.icon} size={19} />
                   {r.name}
@@ -2133,9 +2131,7 @@ function QuizRunner({
             secondary
             icon="ArrowLeft"
             disabled={session.current === 0}
-            onClick={() =>
-              setSession((s) => ({ ...s, current: s.current - 1 }))
-            }
+            onClick={() => patchSession({ current: session.current - 1 })}
           >
             Anterior
           </Button>
@@ -2146,18 +2142,21 @@ function QuizRunner({
           ) : (
             <Button
               icon="ArrowRight"
-              onClick={() =>
-                setSession((s) => ({ ...s, current: s.current + 1 }))
-              }
+              onClick={() => patchSession({ current: session.current + 1 })}
             >
               Siguiente
             </Button>
           )}
         </div>
       )}
+      {isCards && session.ratedIds.length === session.total && (
+        <Button onClick={finish}>Terminar repaso</Button>
+      )}
       <div className="runner-note">
-        <ShieldCheck size={14} /> Contenido ilustrativo para explorar el flujo,
-        no es un banco validado.
+        <ShieldCheck size={14} />{" "}
+        {q.sample
+          ? "Pregunta de prueba: contenido pendiente de validación."
+          : "Tus respuestas se guardan automáticamente."}
       </div>
     </div>
   );
@@ -2324,7 +2323,7 @@ function Results({ result, go, marked, toggleMark }) {
   );
 }
 
-function Roadmap({ completed, openModal }) {
+function Roadmap({ completed, streak, openModal }) {
   const next = missions.findIndex((_, i) => !completed.includes(i));
   return (
     <>
@@ -2341,7 +2340,7 @@ function Roadmap({ completed, openModal }) {
             className="streak-badge"
             onClick={() => openModal({ type: "achievement" })}
           >
-            <Flame size={20} /> 7 días de racha
+            <Flame size={20} /> {streak} días de racha
           </button>
         }
       />
@@ -2450,262 +2449,240 @@ function Roadmap({ completed, openModal }) {
   );
 }
 
-function Stats({ history, openModal }) {
-  const [tab, setTab] = useState("Resumen");
-  const [period, setPeriod] = useState("Esta semana");
-  const real = history.filter((h) => !h.isCards);
-  const total = real.reduce((n, h) => n + h.total, 240);
-  const correct = real.reduce((n, h) => n + h.correct, 197);
+function Stats({ initialStats, notify }) {
+  const [period, setPeriod] = useState("week");
+  const [stats, setStats] = useState(initialStats);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+    api
+      .stats(period)
+      .then((data) => {
+        if (active) setStats(data);
+      })
+      .catch((error) => {
+        if (active) setError(error.message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [period]);
+  const points = stats.chart.map((day, i) => ({
+    ...day,
+    x: 50 + (i * 600) / (stats.chart.length - 1),
+    y: 210 - (day.average || 0) * 18,
+  }));
+  const segments = [];
+  let segment = [];
+  points.forEach((point) => {
+    if (point.average === null) {
+      if (segment.length) segments.push(segment);
+      segment = [];
+    } else segment.push(point);
+  });
+  if (segment.length) segments.push(segment);
   return (
     <>
       <PageTitle
-        eyebrow="TU ESFUERZO, EN PERSPECTIVA"
-        title={
-          <>
-            Mira cuánto <span className="text-pink">has crecido.</span>
-          </>
-        }
-        subtitle="Cada respuesta cuenta una parte de tu progreso."
-        action={
-          <label className="period-select">
-            <span className="sr-only">Periodo de estadísticas</span>
-            <select value={period} onChange={(e) => setPeriod(e.target.value)}>
-              <option>Esta semana</option>
-              <option>Este mes</option>
-            </select>
-          </label>
-        }
+        eyebrow="EL PROGRESO TAMBIÉN SE PUEDE VER"
+        title="Tu esfuerzo, en perspectiva."
+        subtitle="Resultados de los quizzes que has completado."
       />
-      <div className="filter-tabs">
-        {["Resumen", "Análisis por área"].map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={tab === t ? "active" : ""}
-          >
-            {t}
-          </button>
+      <div className="metric-grid">
+        {[
+          {
+            label: "Promedio general",
+            value: stats.average === null ? "—" : stats.average.toFixed(1),
+            unit: "/ 10",
+            icon: "Target",
+            color: "cyan",
+          },
+          {
+            label: "Preguntas calificadas",
+            value: stats.total,
+            unit: "preguntas",
+            icon: "CheckCheck",
+            color: "purple",
+          },
+          {
+            label: "Días de racha",
+            value: stats.streak,
+            unit: "días",
+            icon: "Flame",
+            color: "pink",
+          },
+        ].map((item) => (
+          <div className="metric-card" key={item.label}>
+            <span className={`icon-tile ${item.color}`}>
+              <Icon name={item.icon} />
+            </span>
+            <div>
+              <span>{item.label}</span>
+              <strong>
+                {item.value}
+                <small> {item.unit}</small>
+              </strong>
+            </div>
+          </div>
         ))}
       </div>
-      {tab === "Resumen" ? (
-        <>
-          <div className="stats-top">
-            <section className="panel stats-average">
-              <div>
-                <span className="eyebrow">PROMEDIO HISTÓRICO</span>
-                <h2>
-                  {((correct / total) * 10).toFixed(1)}
-                  <small>/ 10</small>
-                </h2>
-                <Tag color="lime">
-                  <ArrowUpRight size={14} /> Cada día cuenta
-                </Tag>
-              </div>
-              <div
-                className="score-ring"
-                style={{ "--score": `${(correct / total) * 100}%` }}
-              >
-                <span>
-                  <Target size={23} />
-                  <strong>{Math.round((correct / total) * 100)}%</strong>
-                  <small>de aciertos</small>
-                </span>
-              </div>
-            </section>
-            <div className="stats-small-grid">
-              {[
-                {
-                  icon: "BookOpen",
-                  value: total,
-                  label: "Respuestas",
-                  color: "cyan",
-                },
-                {
-                  icon: "CheckCheck",
-                  value: correct,
-                  label: "Aciertos",
-                  color: "lime",
-                },
-                {
-                  icon: "RotateCcw",
-                  value: total - correct,
-                  label: "Por reforzar",
-                  color: "pink",
-                },
-                {
-                  icon: "Target",
-                  value: "24%",
-                  label: "Exposición al banco",
-                  color: "purple",
-                },
-              ].map((s) => (
-                <div className="panel stat-small" key={s.label}>
-                  <span className={`icon-tile ${s.color}`}>
-                    <Icon name={s.icon} size={18} />
-                  </span>
-                  <strong>{s.value}</strong>
-                  <span>{s.label}</span>
-                </div>
-              ))}
-            </div>
+      <section className="panel progress-chart" aria-busy={loading}>
+        <div className="section-heading">
+          <div>
+            <span className="eyebrow">TU CONSTANCIA, DÍA A DÍA</span>
+            <h2>Evolución del promedio</h2>
           </div>
-          <section className="panel progress-chart">
-            <div className="section-heading">
-              <div>
-                <span className="eyebrow">CONSTRUYENDO TU MEJOR VERSIÓN</span>
-                <h2>
-                  Tu progreso {period === "Esta semana" ? "semanal" : "mensual"}
-                </h2>
-              </div>
-              <Tag color="purple">DATOS DE EJEMPLO</Tag>
-            </div>
-            <div
-              className="chart-container"
+          <div className="filter-tabs">
+            <button
+              className={period === "week" ? "active" : ""}
+              onClick={() => setPeriod("week")}
+            >
+              Esta semana
+            </button>
+            <button
+              className={period === "month" ? "active" : ""}
+              onClick={() => setPeriod("month")}
+            >
+              Últimas 4 semanas
+            </button>
+          </div>
+        </div>
+        {error ? (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        ) : loading ? (
+          <p className="muted">Actualizando tu gráfica…</p>
+        ) : (
+          <>
+            <svg
+              viewBox="0 0 700 250"
               role="img"
-              aria-label={
-                period === "Esta semana"
-                  ? "Promedios de ejemplo: lunes 6.2, martes 7, miércoles 6.8, jueves 7.6, viernes 7.3, sábado 8 y domingo 8.2."
-                  : "Promedios mensuales de ejemplo: semana 1, 6.4; semana 2, 7; semana 3, 7.6; semana 4, 8.2."
-              }
+              aria-label="Promedio de quizzes completados por periodo"
+              className="real-stats-chart"
             >
-              <div className="chart-labels">
-                <span>10</span>
-                <span>8</span>
-                <span>6</span>
-                <span>4</span>
-              </div>
-              <div className="chart-plot">
-                <div className="chart-grid">
-                  <i />
-                  <i />
-                  <i />
-                  <i />
-                </div>
-                <svg
-                  viewBox="0 0 700 170"
-                  preserveAspectRatio="none"
-                  aria-hidden="true"
-                >
-                  <defs>
-                    <linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#b690ed" stopOpacity=".28" />
-                      <stop offset="100%" stopColor="#b690ed" stopOpacity="0" />
-                    </linearGradient>
-                  </defs>
-                  <path
-                    d={
-                      period === "Esta semana"
-                        ? "M0,120 L116,95 L232,103 L348,73 L464,85 L580,55 L700,43 L700,170 L0,170 Z"
-                        : "M0,115 L233,97 L466,70 L700,43 L700,170 L0,170 Z"
-                    }
-                    fill="url(#chartFill)"
+              {[0, 5, 10].map((n) => (
+                <g key={n}>
+                  <line
+                    x1="40"
+                    x2="670"
+                    y1={210 - n * 18}
+                    y2={210 - n * 18}
+                    stroke="#ffffff12"
                   />
-                  <path
-                    d={
-                      period === "Esta semana"
-                        ? "M0,120 L116,95 L232,103 L348,73 L464,85 L580,55 L700,43"
-                        : "M0,115 L233,97 L466,70 L700,43"
-                    }
-                    fill="none"
-                    stroke="#b690ed"
-                    strokeWidth="3"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  <circle cx="699" cy="43" r="5" fill="#c9f35b" />
-                </svg>
-                <div className="chart-x">
-                  {(period === "Esta semana"
-                    ? ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
-                    : ["Semana 1", "Semana 2", "Semana 3", "Semana 4"]
-                  ).map((t) => (
-                    <span key={t}>{t}</span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </section>
-          <div className="strength-grid">
-            <button
-              className="panel strength-card"
-              onClick={() =>
-                openModal({
-                  type: "area",
-                  area: areas[3],
-                  title: "Tu fortaleza",
-                })
-              }
-            >
-              <span className="icon-tile lime">
-                <Trophy />
-              </span>
-              <div>
-                <span>Tu área más fuerte</span>
-                <h3>Cirugía</h3>
-                <p>¡Sigue afianzando lo que sabes!</p>
-              </div>
-              <strong>
-                88% <ChevronRight size={16} />
-              </strong>
-            </button>
-            <button
-              className="panel strength-card"
-              onClick={() =>
-                openModal({
-                  type: "area",
-                  area: areas[2],
-                  title: "Tu siguiente oportunidad",
-                })
-              }
-            >
-              <span className="icon-tile pink">
-                <Target />
-              </span>
-              <div>
-                <span>Tu próxima oportunidad</span>
-                <h3>Gineco y Obstetricia</h3>
-                <p>Un repaso puede hacer la diferencia.</p>
-              </div>
-              <strong>
-                68% <ChevronRight size={16} />
-              </strong>
-            </button>
-          </div>
-        </>
-      ) : (
-        <section className="panel area-analysis">
-          <div className="section-heading">
-            <h2>Un vistazo a cada área</h2>
-            <Tag color="purple">EJEMPLO</Tag>
-          </div>
-          {areas.map((a) => (
-            <button
-              key={a.name}
-              onClick={() =>
-                openModal({ type: "area", area: a, title: a.name })
-              }
-            >
-              <span className={`icon-tile ${a.color}`}>
-                <Icon name={a.icon} />
-              </span>
-              <div>
+                  <text x="12" y={215 - n * 18} fill="#a89bbf" fontSize="12">
+                    {n}
+                  </text>
+                </g>
+              ))}
+              {segments.map((group, i) => (
+                <polyline
+                  key={i}
+                  fill="none"
+                  stroke="#a2ee39"
+                  strokeWidth="3"
+                  points={group.map((p) => `${p.x},${p.y}`).join(" ")}
+                />
+              ))}
+              {points.map((p) => (
+                <g key={p.day}>
+                  {p.average !== null && (
+                    <>
+                      <circle cx={p.x} cy={p.y} r="5" fill="#a2ee39" />
+                      <text
+                        x={p.x}
+                        y={p.y - 12}
+                        textAnchor="middle"
+                        fill="#fff"
+                        fontSize="12"
+                      >
+                        {p.average.toFixed(1)}
+                      </text>
+                    </>
+                  )}
+                  <text
+                    x={p.x}
+                    y="240"
+                    textAnchor="middle"
+                    fill="#a89bbf"
+                    fontSize="12"
+                  >
+                    {p.label}
+                  </text>
+                </g>
+              ))}
+            </svg>
+            {!points.some((p) => p.average !== null) && (
+              <p className="muted">
+                Completa tu primer quiz para ver tu evolución.
+              </p>
+            )}
+          </>
+        )}
+      </section>
+      <div className="stats-summary-grid">
+        <section className="panel">
+          <h2>Así vas en cada área</h2>
+          <div className="area-stats-list">
+            {stats.areaStats.map((area) => (
+              <div className="real-area-stat" key={area.name}>
                 <div>
-                  <strong>{a.name}</strong>
-                  <span>{a.score}%</span>
+                  <span className={`icon-tile ${area.color}`}>
+                    <Icon name={area.icon} />
+                  </span>
+                  <strong>{area.name}</strong>
+                  <span>
+                    {area.score === null ? "Sin intentos" : `${area.score}%`}
+                  </span>
                 </div>
-                <Progress value={a.score} color={a.color} />
+                <Progress value={area.score || 0} color={area.color} />
+                <small className="muted">
+                  {area.correct} aciertos de {area.total} preguntas
+                </small>
               </div>
-              <ChevronRight size={18} />
-            </button>
-          ))}
+            ))}
+          </div>
         </section>
-      )}
+        <section className="panel">
+          <span className="icon-tile cyan">
+            <BookOpen />
+          </span>
+          <h2>Tu recorrido por el banco</h2>
+          <p>
+            Has practicado {stats.unique} preguntas distintas de{" "}
+            {stats.bankTotal} disponibles.
+          </p>
+          <Progress value={stats.exposure} />
+          <div className="modal-metrics">
+            <div>
+              <strong>{stats.correct}</strong>
+              <span>Aciertos</span>
+            </div>
+            <div>
+              <strong>{stats.incorrect}</strong>
+              <span>Errores y sin responder</span>
+            </div>
+          </div>
+          <p className="muted">
+            {stats.bestArea
+              ? `Tu mejor resultado: ${stats.bestArea.name}.`
+              : "Tu siguiente entrenamiento abrirá el camino."}
+          </p>
+        </section>
+      </div>
     </>
   );
 }
 
 function HistoryPage({ history, go, openModal }) {
   const [filter, setFilter] = useState("Todas");
-  const all = [...history, ...sampleHistory];
+  const all = history;
   const filtered = all.filter(
     (h) =>
       filter === "Todas" || (filter === "Quizzes" ? !h.isCards : h.isCards),
@@ -2725,7 +2702,7 @@ function HistoryPage({ history, go, openModal }) {
           <button
             key={f}
             className={filter === f ? "active" : ""}
-            onClick={() => setFilter(f)}
+            onClick={() => go(`/resultados/${h.id}`)}
           >
             {f}
           </button>
@@ -2749,7 +2726,6 @@ function HistoryPage({ history, go, openModal }) {
               <h3>{h.title}</h3>
               <p>
                 {h.date} · {h.total} {h.isCards ? "tarjetas" : "preguntas"}
-                {h.id.startsWith("sample") && " · Ejemplo"}
               </p>
             </div>
             <div className="history-score">
@@ -2875,7 +2851,7 @@ function Profile({ profile, marked, go, openModal }) {
   );
 }
 
-function Plans({ profile, select }) {
+function Plans({ profile }) {
   return (
     <>
       <PageTitle
@@ -2885,7 +2861,7 @@ function Plans({ profile, select }) {
             Dale espacio a <span className="text-pink">tu potencial.</span>
           </>
         }
-        subtitle="Compara los planes y prueba el cambio de forma simulada."
+        subtitle="Tu cuenta incluye el plan Básico. Premium estará disponible más adelante."
       />
       <div className="plans-grid">
         {["Básico", "Premium"].map((p, i) => (
@@ -2933,37 +2909,26 @@ function Plans({ profile, select }) {
                 </li>
               ))}
             </ul>
-            <Button
-              secondary={!i}
-              className="full"
-              disabled={profile.plan === p}
-              onClick={() => select(p)}
-            >
-              {profile.plan === p ? "Tu plan actual" : `Probar plan ${p}`}
+            <Button secondary={!i} className="full" disabled>
+              {profile.plan === p ? "Tu plan actual" : "Próximamente"}
             </Button>
           </section>
         ))}
       </div>
       <p className="plans-note">
-        <ShieldCheck size={16} /> Selección de prueba. No hay pagos,
-        suscripciones ni cargos reales.
+        <ShieldCheck size={16} /> La contratación de Premium todavía no está
+        habilitada.
       </p>
     </>
   );
 }
 
-function SettingsPage({
-  profile,
-  saved,
-  setSaved,
-  updateProfile,
-  notify,
-  go,
-  reset,
-}) {
+function SettingsPage({ profile, saved, updateProfile, go }) {
   const [form, setForm] = useState(profile);
-  const [reminders, setReminders] = useState(saved.reminders ?? true);
-  const [sound, setSound] = useState(saved.sound ?? false);
+  const [reminders, setReminders] = useState(
+    saved.preferences.reminders ?? true,
+  );
+  const [sound, setSound] = useState(saved.preferences.sound ?? false);
   const change = (e) =>
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
   return (
@@ -2979,9 +2944,13 @@ function SettingsPage({
         className="settings-layout"
         onSubmit={(e) => {
           e.preventDefault();
-          updateProfile(form);
-          setSaved((s) => ({ ...s, reminders, sound }));
-          notify("Tus preferencias de demo se guardaron en este navegador.");
+          updateProfile({
+            name: form.name,
+            lastname: form.lastname,
+            specialty: form.specialty,
+            target: form.target,
+            preferences: { reminders, sound },
+          });
         }}
       >
         <section className="panel">
@@ -3004,12 +2973,11 @@ function SettingsPage({
             />
           </div>
           <Field
-            label="Correo electrónico de ejemplo"
+            label="Correo de tu cuenta"
             name="email"
             type="email"
             value={form.email}
-            onChange={change}
-            required
+            readOnly
           />
           <label className="field">
             <span>Mi especialidad objetivo</span>
@@ -3023,9 +2991,11 @@ function SettingsPage({
           <label className="field">
             <span>Año del ENARM</span>
             <select name="target" value={form.target} onChange={change}>
-              {["2026", "2027", "2028"].map((y) => (
-                <option key={y}>{y}</option>
-              ))}
+              {[...new Set(["2026", "2027", "2028", "2029", form.target])].map(
+                (y) => (
+                  <option key={y}>{y}</option>
+                ),
+              )}
             </select>
           </label>
         </section>
@@ -3066,15 +3036,12 @@ function SettingsPage({
             </div>
           ))}
           <p className="small-text muted">
-            Estas preferencias son visuales en la demo. No se envían
-            notificaciones ni se reproduce audio.
+            Tus preferencias se guardan en tu cuenta. Los avisos automáticos y
+            sonidos se habilitarán más adelante.
           </p>
           <Button className="full" type="submit" icon="Check">
             Guardar cambios
           </Button>
-          <button className="reset-demo" type="button" onClick={reset}>
-            <RotateCcw size={15} /> Reiniciar recorrido de demo
-          </button>
         </section>
       </form>
     </>
@@ -3096,24 +3063,24 @@ function Help({ go }) {
         <section className="faq-list">
           {[
             {
-              q: "¿Cómo funciona esta demo?",
-              a: "Este es un mockup navegable de Entrenarme. Puedes crear un perfil simulado, responder preguntas de ejemplo, marcar flashcards y recorrer las pantallas. El contenido y las estadísticas iniciales son ilustrativos.",
+              q: "¿Cómo funciona Entrenarme?",
+              a: "Crea una cuenta, configura un quiz y entrena. Las respuestas, los marcadores y el avance se guardan en tu cuenta. Puedes retomar una actividad pendiente después de recargar o volver a iniciar sesión.",
             },
             {
               q: "¿Cómo se calcula mi promedio?",
-              a: "El flujo de referencia calcula el promedio con las últimas 280 preguntas calificadas y revisadas. En este mockup, el inicio muestra la última sesión de muestra que completaste. Las estadísticas parten de un conjunto de datos de ejemplo.",
+              a: "Tu promedio actual usa las últimas 280 preguntas calificadas. Las estadísticas generales incluyen todos tus quizzes completados. Las tarjetas no cambian tu calificación y las preguntas sin responder cuentan como errores.",
             },
             {
               q: "¿Para qué sirven los tokens?",
-              a: "Representan las sesiones de práctica disponibles. La referencia incluye tokens diarios, Tokens+ por constancia y comodines para cuidar la racha. En esta demo no se descuentan ni se compran.",
+              a: "Tienes 10 tokens por día, renovados según la fecha de Ciudad de México. Una actividad consume un token por cada cinco preguntas o tarjetas, redondeando hacia arriba. Las misiones son gratuitas y otorgan Tokens+ al completarlas por primera vez.",
             },
             {
               q: "¿Qué es ENARMapa?",
-              a: "Es tu ruta de estudio semanal. Empieza con diagnósticos por área y termina con un repaso semanal. Completar una misión de la demo desbloquea la siguiente.",
+              a: "Es tu ruta de estudio semanal. Empieza con diagnósticos por área y termina con un repaso semanal. Completar una misión desbloquea la siguiente.",
             },
             {
               q: "¿Dónde se guarda mi información?",
-              a: "Solo en el navegador de este dispositivo. Se conservan el perfil de ejemplo, las preferencias, las preguntas marcadas y los resultados de la demo. Las contraseñas no se guardan y no hay servidor ni autenticación real.",
+              a: "Tu información se guarda en la base de datos del servidor, asociada a tu cuenta. Las contraseñas se guardan mediante hashes y las sesiones se mantienen con cookies privadas. Cada cuenta tiene su propio historial y progreso.",
             },
             {
               q: "¿Ya puedo usar las preguntas para estudiar?",
@@ -3141,15 +3108,14 @@ function Help({ go }) {
           <Button secondary icon="ArrowRight" onClick={() => go("/inicio")}>
             Volver a mi espacio
           </Button>
-          <small>Versión 1.0 · Mockup interactivo</small>
+          <small>Versión 2.0 · Aplicación web</small>
         </aside>
       </div>
     </>
   );
 }
 
-function Marked({ marked, toggleMark, go }) {
-  const list = questions.filter((q) => marked.includes(q.id));
+function Marked({ list, toggleMark, go }) {
   return (
     <>
       <button className="back-link" onClick={() => go("/perfil")}>

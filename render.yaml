@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: frontenarm
+    runtime: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: NODE_VERSION
+        value: 24
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://entrenarme-api-haghf3bbfwgda8g9.eastus2-01.azurewebsites.net/api/*
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /api/*
+        name: Cache-Control
+        value: no-store
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
