@@ -15,6 +15,8 @@ En el portal crea una **Aplicación web**, sin base adicional:
 
 Copia el **dominio predeterminado real** de Información general. Los recursos nuevos pueden incluir un sufijo y región; no supongas que es simplemente `entrenarme-api.azurewebsites.net`.
 
+Recurso creado para esta demo el 30 de septiembre de 2026: `entrenarme-api` en `entrenarme-plan` Basic B1, East US 2. Host: `entrenarme-api-haghf3bbfwgda8g9.eastus2-01.azurewebsites.net`. El portal mostró USD 12.41/mes estimados para el plan, adicional a PostgreSQL. El `render.yaml` de la raíz ya contiene este destino.
+
 ## 2. Preparar Render
 
 Crea un Static Site desde el repositorio con el código actualizado:
