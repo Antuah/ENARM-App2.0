@@ -73,3 +73,14 @@ SMTP real no se probó con un proveedor: los tests inyectan un buzón de prueba 
 - La cuenta temporal de verificación y sus registros asociados se eliminaron al finalizar; no se modificaron cuentas ajenas.
 - La contraseña PostgreSQL se guardó en la configuración privada de App Service. Los archivos temporales con credenciales se eliminaron tanto localmente como en Cloud Shell.
 - Render aún requiere inicio de sesión del propietario, publicación del frontend y verificación del proxy real. `APP_ORIGIN` apunta temporalmente al dominio Azure y debe actualizarse al dominio definitivo del frontend.
+
+## Demo completa en Azure · 30 de septiembre de 2026
+
+- Por decisión del propietario, frontend y API se publicaron juntos en el App Service existente. Render ya no es necesario. `SERVE_FRONTEND=true` y `APP_ORIGIN` coinciden con el dominio Azure.
+- `npm run deploy:prepare:full` recompiló la web y generó un ZIP con 43 entradas desde la lista permitida. Se verificó el paquete extraído contra PostgreSQL Azure antes de publicarlo.
+- Cloud Shell confirmó que el despliegue terminó y el sitio arrancó correctamente. Se comprobó la configuración pública y se reinició App Service con el frontend activado.
+- La URL raíz, JavaScript, CSS, mascota, favicon y `/api/health` respondieron 200. No se creó otro plan de hosting.
+- El firewall de PostgreSQL contiene las 25 reglas de salida autorizadas del App Service.
+- Safari real sobre HTTPS: bienvenida y login visibles; sesión conservada tras recargar; quiz con cinco preguntas; respuesta y posición guardadas; recarga recuperó la pregunta 2 y una respuesta. Se confirmó ese avance directamente en PostgreSQL remoto.
+- Guardar y salir conservó la actividad; logout volvió a la pantalla de acceso. No se guardó la contraseña temporal en Safari. La cuenta de verificación y sus registros asociados se retiraron al terminar.
+- SMTP permanece pendiente y el banco conserva cinco preguntas de prueba. No se verificó esta publicación en un dispositivo móvil físico; la comprobación previa de responsive local sigue documentada arriba.

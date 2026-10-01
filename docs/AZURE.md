@@ -75,7 +75,7 @@ Estas migraciones crean la estructura; **no copian las cuentas, sesiones ni resu
 
 ## 6. Publicar también el backend
 
-Para publicar la API en Azure App Service y el frontend estático en Render, sigue [DEPLOY-AZURE-RENDER.md](DEPLOY-AZURE-RENDER.md). `npm run deploy:prepare` genera un ZIP del backend sin secretos, listo para instalar sus dependencias en Azure.
+Para servir frontend y API juntos en el App Service existente, sigue [DEPLOY-AZURE.md](DEPLOY-AZURE.md). `npm run deploy:prepare:full` genera el ZIP completo sin secretos. La guía de Azure + Render queda como alternativa para separar el frontend después.
 
 En el hosting Node/Docker define estos mismos campos de base como variables secretas del servicio. Ajusta `NODE_ENV=production`, `APP_ORIGIN=https://TU_DOMINIO`, `HOST=0.0.0.0` y el puerto que indique el servicio. Configura SMTP aparte. Si el servicio sale por otras IP, permite sus IP de salida en el firewall de PostgreSQL o configura una conexión privada entre servicios. No necesitas abrir la base a todas las IP para desplegar.
 

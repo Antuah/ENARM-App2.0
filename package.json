@@ -15,6 +15,7 @@
     "db:seed": "node --env-file-if-exists=.env server/cli.js seed",
     "bank:import": "node --env-file-if-exists=.env server/cli.js import",
     "deploy:prepare": "node scripts/prepare-azure.mjs",
+    "deploy:prepare:full": "node scripts/prepare-azure.mjs --with-frontend",
     "test": "node --test --test-concurrency=1 server/test/*.test.js",
     "format": "prettier --write src server vite.config.js package.json README.md docs"
   },

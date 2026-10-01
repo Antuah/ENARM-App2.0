@@ -1,5 +1,7 @@
 # Demo: backend en Azure y frontend estático en Render
 
+> Alternativa histórica. La arquitectura elegida ahora sirve frontend y API juntos en el App Service existente; sigue [DEPLOY-AZURE.md](DEPLOY-AZURE.md) para esa publicación.
+
 Arquitectura: navegador → frontend Render → `/api/*` reenviado a Azure App Service → PostgreSQL de Azure. La web conserva llamadas relativas a `/api` y cookies HttpOnly, Secure, SameSite=Lax. El navegador ve un solo origen, aunque los servidores estén separados. No configures el frontend para llamar directamente al dominio de Azure ni cambies las cookies a SameSite=None.
 
 ## 1. Crear Azure App Service

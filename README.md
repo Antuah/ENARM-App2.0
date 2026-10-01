@@ -55,7 +55,7 @@ En desarrollo se incluyen **cinco preguntas de prueba**, conservadas del mockup.
 
 El envío de correo real necesita credenciales SMTP y un remitente configurado. En desarrollo, los enlaces de recuperación se encuentran en `server/data/outbox/*.json`; no se devuelven por la API. Premium y pagos todavía no están habilitados. Las preferencias de sonido y recordatorios se conservan, pero sus servicios aún no se ejecutan.
 
-La aplicación completa necesita hosting que ejecute Node.js y una base PostgreSQL, con HTTPS. **GitHub Pages no ejecuta esta API**. Fastify puede servir web y API juntas, o solo la API con `SERVE_FRONTEND=false`. La base de Azure ya está conectada; publicar los servidores es un paso separado. La guía de [Azure App Service + Render](docs/DEPLOY-AZURE-RENDER.md) prepara esa separación mediante un proxy para conservar las sesiones del navegador.
+La demo usa **Azure App Service para frontend y API juntos**, con PostgreSQL de Azure y HTTPS. La guía de [publicación completa en Azure](docs/DEPLOY-AZURE.md) documenta el dominio y las actualizaciones; `npm run deploy:prepare:full` genera el paquete completo sin secretos. **GitHub Pages no ejecuta esta API**. Fastify también permite servir solo la API con `SERVE_FRONTEND=false`, si posteriormente se separa el frontend.
 
 La configuración de producción, los comandos del banco y las decisiones de seguridad están en [docs/BACKEND.md](docs/BACKEND.md). El contrato HTTP está en [docs/API.md](docs/API.md). Para conectar el servidor ya creado en Azure, sigue [docs/AZURE.md](docs/AZURE.md).
 
