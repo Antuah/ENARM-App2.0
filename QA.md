@@ -102,3 +102,13 @@ SMTP real no se probó con un proveedor: los tests inyectan un buzón de prueba 
 - ZIP completo verificado: 44 entradas, sin .env, credenciales de prueba, bases locales ni pruebas.
 
 - Prueba adicional basada en el servicio real: `history-list` no devolvió la misión ENARMapa pausada. El inicio ahora recupera esa sesión desde `enarmapa-state.currentMission.sessionId`; se añadió una regresión específica.
+
+### Verificación final desde Azure
+
+- Cloud Shell confirmó despliegue completado y sitio iniciado. La raíz y el archivo JavaScript de la versión final respondieron 200, con CSP que permite únicamente el origen Supabase configurado para conexiones externas.
+- `/api/health` devolvió `{"status":"ok","service":"frontend","backend":"supabase"}`. Los datos de negocio ya no utilizan el backend PostgreSQL anterior.
+- En navegador real sobre la URL pública: login correcto, restauración de sesión, misión pausada recuperada en Inicio, reanudación, envío de una respuesta y recarga que conservó la pregunta 2 de 25.
+- Pausar y salir conservó el avance; logout volvió al acceso y la recarga mantuvo la sesión cerrada.
+- Vista móvil comprobada a 390 × 844: ancho del documento 390, sin desbordamiento horizontal. También se comprobó la vista de escritorio a 1280 de ancho. Se restableció el viewport del navegador.
+- Los 31 tests y el build pasaron también en GitHub Actions. Commit de integración: `14bde75`, rama `codex/supabase-integration`.
+- Se retiraron los tokens del archivo local de credenciales de prueba. La cuenta y sus entrenamientos de prueba permanecen en el servicio externo; no hay endpoint documentado para eliminarlos.
