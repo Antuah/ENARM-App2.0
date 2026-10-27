@@ -28,7 +28,7 @@ try {
   const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   // Oryx installs Linux dependencies; the optional frontend is already compiled.
   pkg.scripts = {
-    start: "node server/index.js",
+    start: includeFrontend ? "node server/web.js" : "node server/index.js",
     "db:check": "node server/cli.js check",
     "db:migrate": "node server/cli.js migrate",
     "db:seed": "node server/cli.js seed",

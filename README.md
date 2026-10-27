@@ -1,3 +1,7 @@
+# Integración actual con Supabase
+
+El frontend continúa en Azure y consume la API ENARM externa de Supabase. Consulta [la guía actual](docs/SUPABASE.md) para desarrollo, autenticación, publicación y límites. El backend PostgreSQL descrito más abajo se conserva como implementación anterior; ya no es el destino de la web actual.
+
 # Entrenarme · aplicación web
 
 Aplicación para practicar el ENARM, con diseño pensado primero para móvil y adaptable a computadora. Ahora incluye backend, cuentas y persistencia real. El flujo y las mascotas del mockup se conservaron; el progreso dejó de depender de datos simulados del navegador.

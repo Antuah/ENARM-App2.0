@@ -84,3 +84,21 @@ SMTP real no se probó con un proveedor: los tests inyectan un buzón de prueba 
 - Safari real sobre HTTPS: bienvenida y login visibles; sesión conservada tras recargar; quiz con cinco preguntas; respuesta y posición guardadas; recarga recuperó la pregunta 2 y una respuesta. Se confirmó ese avance directamente en PostgreSQL remoto.
 - Guardar y salir conservó la actividad; logout volvió a la pantalla de acceso. No se guardó la contraseña temporal en Safari. La cuenta de verificación y sus registros asociados se retiraron al terminar.
 - SMTP permanece pendiente y el banco conserva cinco preguntas de prueba. No se verificó esta publicación en un dispositivo móvil físico; la comprobación previa de responsive local sigue documentada arriba.
+
+## Integración con Supabase · 27 de octubre de 2026
+
+- Se adaptó la web a Supabase Auth y las Edge Functions de ENARMAPI, utilizando únicamente la llave publicable y una cuenta de usuario. No se accedió al proyecto, al código ni a la base externa con credenciales administrativas.
+- El dominio `.supabase.com` no resuelve; el destino efectivo es `https://oksifebzxhciydqryisi.supabase.co`.
+- Compilación correcta y 31 pruebas automatizadas aprobadas: 14 del backend anterior conservado y 17 del adaptador, servidor web y componentes de la nueva integración. Las pruebas de contrato usan respuestas simuladas y se complementaron con las pruebas reales siguientes.
+- Se corrigieron dependencias dentro de los rangos compatibles. `npm audit --omit=dev` informó cero vulnerabilidades.
+- Registro real con el correo de prueba autorizado: requiere confirmación por correo. El usuario confirmó y el login con contraseña respondió correctamente.
+- El enlace mostrado por el usuario redirigió a `localhost:3000` con `otp_expired`. A pesar de ese enlace, se comprobó que la cuenta ya estaba confirmada mediante un login correcto. El responsable de Supabase debe permitir las URLs de retorno Azure documentadas en SUPABASE.md; no se cambió esa configuración externa.
+- Perfil provisionado y activo automáticamente, plan Free. Se actualizó nombre visible y especialidad objetivo mediante la API. El banco informó 1667 preguntas publicadas durante esta revisión.
+- Filtros reales de Pediatría: devolvieron 18 especialidades, 157 temas y 982 etiquetas.
+- Quiz rápido de 10 preguntas: no expuso respuestas correctas durante la actividad; confirmó una respuesta, guardó pausa, reanudó y recuperó la respuesta; se completaron los 10 reactivos y se obtuvo resultado ponderado distinto del porcentaje de acierto.
+- Historial, estadísticas y marcas conservaron la actividad y las diez respuestas. Se retiró la marca creada durante la prueba. Análisis Premium rechazó a la cuenta Free con 403 `premium_required`.
+- ENARMapa inició la misión actual de 25 preguntas definida por el servidor y permitió pausarla.
+- No se verificaron permisos positivos de Premium, las misiones futuras ni un ciclo de recuperación por correo. No se trasladaron ni borraron los datos de PostgreSQL Azure.
+- ZIP completo verificado: 44 entradas, sin .env, credenciales de prueba, bases locales ni pruebas.
+
+- Prueba adicional basada en el servicio real: `history-list` no devolvió la misión ENARMapa pausada. El inicio ahora recupera esa sesión desde `enarmapa-state.currentMission.sessionId`; se añadió una regresión específica.

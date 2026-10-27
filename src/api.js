@@ -1,89 +1,94 @@
-let csrfToken = null;
+import { createClient } from "@supabase/supabase-js";
+import { createEnarmApi } from "./enarm-api.js";
 
-export class ApiError extends Error {
-  constructor(message, status, code) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
-
-export async function request(path, { method = "GET", body } = {}) {
-  let response;
-  try {
-    response = await fetch(`/api${path}`, {
-      method,
-      credentials: "same-origin",
-      cache: "no-store",
-      headers: {
-        ...(body ? { "Content-Type": "application/json" } : {}),
-        ...(csrfToken && method !== "GET" ? { "X-CSRF-Token": csrfToken } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
-  } catch {
-    throw new ApiError(
-      "No pudimos conectar con el servidor. Revisa tu conexión e inténtalo de nuevo.",
-      0,
-    );
-  }
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw new ApiError(
-      "El servidor no está disponible. Inténtalo de nuevo.",
-      response.status,
-    );
-  }
-  if (!response.ok)
-    throw new ApiError(
-      data.error?.message || "No se pudo completar la solicitud.",
-      response.status,
-      data.error?.code,
-    );
-  return data;
-}
-
-export const api = {
-  async restore() {
-    const data = await request("/auth/me");
-    csrfToken = data.csrfToken;
-    return request("/bootstrap");
+// Public application key from the integration guide; never a secret or service-role key.
+export const supabaseUrl =
+  import.meta.env.VITE_SUPABASE_URL ||
+  "https://oksifebzxhciydqryisi.supabase.co";
+const publicKey =
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+  "sb_publishable_KOkMCzEYB2v2T4bE_UdKQw_nzS1NW85";
+const preference = "entrenarme.auth.remember";
+const memory = new Map();
+const storage = {
+  getItem(key) {
+    try {
+      return window.localStorage.getItem(preference) === "true"
+        ? window.localStorage.getItem(key)
+        : window.sessionStorage.getItem(key);
+    } catch {
+      return memory.get(key) ?? null;
+    }
   },
-  async authenticate(signup, body) {
-    const data = await request(signup ? "/auth/register" : "/auth/login", {
-      method: "POST",
-      body,
-    });
-    csrfToken = data.csrfToken;
-    return request("/bootstrap");
+  setItem(key, value) {
+    memory.set(key, value);
+    try {
+      const persistent = window.localStorage.getItem(preference) === "true";
+      (persistent ? window.localStorage : window.sessionStorage).setItem(
+        key,
+        value,
+      );
+      (persistent ? window.sessionStorage : window.localStorage).removeItem(
+        key,
+      );
+    } catch {
+      /* A private browser can keep the session in memory. */
+    }
   },
-  async logout() {
-    await request("/auth/logout", { method: "POST" });
-    csrfToken = null;
+  removeItem(key) {
+    memory.delete(key);
+    try {
+      window.localStorage.removeItem(key);
+      window.sessionStorage.removeItem(key);
+    } catch {}
   },
-  bootstrap: () => request("/bootstrap"),
-  profile: (body) => request("/profile", { method: "PATCH", body }),
-  forgot: (email) =>
-    request("/auth/forgot-password", { method: "POST", body: { email } }),
-  reset: (body) => request("/auth/reset-password", { method: "POST", body }),
-  start: (body) => request("/sessions", { method: "POST", body }),
-  session: (id) => request(`/sessions/${id}`),
-  patchSession: (id, body) =>
-    request(`/sessions/${id}`, { method: "PATCH", body }),
-  reveal: (id, questionId) =>
-    request(`/sessions/${id}/questions/${questionId}/reveal`, {
-      method: "POST",
-    }),
-  rate: (id, questionId, rating) =>
-    request(`/sessions/${id}/review`, {
-      method: "POST",
-      body: { questionId, rating },
-    }),
-  finish: (id) => request(`/sessions/${id}/finish`, { method: "POST" }),
-  abandon: (id) => request(`/sessions/${id}/abandon`, { method: "POST" }),
-  mark: (id, marked) =>
-    request(`/bookmarks/${id}`, { method: "PUT", body: { marked } }),
-  stats: (period) => request(`/stats?period=${period}`),
 };
+const client = createClient(supabaseUrl, publicKey, {
+  auth: {
+    storage,
+    storageKey: "entrenarme.supabase.session",
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false,
+    flowType: "pkce",
+  },
+});
+export const api = createEnarmApi({
+  client,
+  baseUrl: supabaseUrl,
+  publicKey,
+  location: window.location,
+  replaceUrl: (url) => {
+    window.history.replaceState(null, "", url);
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  },
+  remember: (enabled) => {
+    try {
+      window.localStorage.setItem(preference, String(enabled));
+    } catch {}
+  },
+  pendingProfile: {
+    get: () => {
+      try {
+        return JSON.parse(
+          window.sessionStorage.getItem("entrenarme.pending-profile") || "null",
+        );
+      } catch {
+        return null;
+      }
+    },
+    set: (value) => {
+      try {
+        window.sessionStorage.setItem(
+          "entrenarme.pending-profile",
+          JSON.stringify(value),
+        );
+      } catch {}
+    },
+    clear: () => {
+      try {
+        window.sessionStorage.removeItem("entrenarme.pending-profile");
+      } catch {}
+    },
+  },
+});

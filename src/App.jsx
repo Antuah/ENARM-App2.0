@@ -305,7 +305,9 @@ export default function App() {
     setLoading(true);
     setConnectionError("");
     try {
-      accept(await api.restore());
+      const data = await api.restore();
+      if (data.authRecovery) go("/restablecer");
+      else accept(data);
     } catch (error) {
       if (error.status !== 401) setConnectionError(error.message);
     } finally {
@@ -373,8 +375,11 @@ export default function App() {
     }
   };
   const authenticate = async (signup, data) => {
-    accept(await api.authenticate(signup, data));
+    const next = await api.authenticate(signup, data);
+    if (next.confirmationRequired) return next;
+    accept(next);
     go("/inicio");
+    return next;
   };
   const updateProfile = (data) =>
     run(async () => {
@@ -395,6 +400,7 @@ export default function App() {
     mission = null,
     topics = [],
     count = 20,
+    fine = {},
   ) =>
     run(async () => {
       const activity = await api.start({
@@ -403,6 +409,7 @@ export default function App() {
         mission,
         topics,
         count,
+        ...fine,
       });
       setSession(activity);
       setModal(null);
@@ -428,7 +435,7 @@ export default function App() {
     run(async () => {
       const data = await api.rate(session.id, id, rating);
       setSession(data);
-      if (data.ratedIds.length === data.total) await finishActivity(data.id);
+      // Completion is an explicit action, only when the server allows it.
     });
   const logout = () =>
     run(async () => {
@@ -441,11 +448,48 @@ export default function App() {
     });
   const abandon = () =>
     run(async () => {
-      await api.abandon(session.id);
+      await api.pause(session.id);
       const next = modal.next || "/quizzes";
       accept(await api.bootstrap());
       setModal(null);
       go(next);
+    });
+  const refreshSession = () =>
+    run(async () => setSession(await api.session(session.id)));
+  const resumeSession = (id = session?.id) =>
+    run(async () => {
+      setSession(await api.resume(id));
+      setModal(null);
+      go("/actividad");
+    });
+  const openHistory = (item) =>
+    run(async () => {
+      const activity = await api.session(item.id);
+      if (activity.status === "completed") go(`/resultados/${item.id}`);
+      else {
+        setSession(activity);
+        go("/actividad");
+      }
+    });
+  const startMission = () =>
+    run(async () => {
+      const activity = await api.startMission();
+      if (activity.rest) {
+        setModal(null);
+        go("/enarmapa");
+        setSaved(await api.bootstrap());
+        return;
+      }
+      setSession(activity);
+      setSaved(await api.bootstrap());
+      setModal(null);
+      go("/actividad");
+    });
+  const completeRest = () =>
+    run(async () => {
+      await api.completeRest();
+      accept(await api.bootstrap());
+      notify("Descanso completado. Tu ruta está actualizada.");
     });
   const navigate = (path) => {
     if (busyRef.current) return;
@@ -472,12 +516,25 @@ export default function App() {
     );
   else if (connectionError)
     content = (
-      <EmptyState
-        title="No pudimos conectar"
-        text={connectionError}
-        action="Reintentar"
-        onClick={restore}
-      />
+      <>
+        <EmptyState
+          title="No pudimos conectar"
+          text={connectionError}
+          action="Reintentar"
+          onClick={restore}
+        />
+        <Button
+          secondary
+          onClick={async () => {
+            await api.logout();
+            setConnectionError("");
+            setSaved(null);
+            go("/login");
+          }}
+        >
+          Volver al acceso
+        </Button>
+      </>
     );
   else if (route === "/bienvenida") content = <Landing go={go} />;
   else if (isPublic)
@@ -495,12 +552,20 @@ export default function App() {
         go={go}
         openModal={setModal}
         stats={saved.stats}
+        roadmap={saved.roadmap}
         activeSession={session}
       />
     );
   else if (route === "/quizzes") content = <QuizHub go={go} />;
   else if (route === "/quizzes/historial")
-    content = <HistoryPage history={history} go={go} />;
+    content = (
+      <HistoryPage
+        history={history}
+        pagination={saved.historyPagination}
+        open={openHistory}
+        go={go}
+      />
+    );
   else if (route.startsWith("/quizzes/"))
     content = (
       <QuizSetup
@@ -523,6 +588,8 @@ export default function App() {
         marked={marked}
         toggleMark={toggleMark}
         finish={finishSession}
+        refresh={refreshSession}
+        resume={resumeSession}
         openModal={setModal}
       />
     ) : (
@@ -557,13 +624,18 @@ export default function App() {
   else if (route === "/enarmapa")
     content = (
       <Roadmap
-        completed={completed}
-        streak={saved.stats.streak}
+        roadmap={saved.roadmap}
         openModal={setModal}
+        completeRest={completeRest}
       />
     );
   else if (route === "/estadisticas")
-    content = <Stats initialStats={saved.stats} notify={notify} />;
+    content = (
+      <Stats
+        initialStats={saved.stats}
+        premium={profile.planId === "premium"}
+      />
+    );
   else if (route === "/perfil")
     content = (
       <Profile profile={profile} marked={marked} go={go} openModal={setModal} />
@@ -592,7 +664,6 @@ export default function App() {
       />
     );
   const shell = !loading && !connectionError && !isPublic && profile;
-  const resource = saved?.resources;
   return (
     <BusyContext.Provider value={busy}>
       <a
@@ -663,17 +734,7 @@ export default function App() {
                 <span className="status-dot" /> UN POCO MEJOR CADA DÍA
               </span>
               <div className="topbar-actions">
-                <button
-                  className="token-pill"
-                  onClick={() => setModal({ type: "tokens" })}
-                >
-                  <Zap size={16} fill="currentColor" />{" "}
-                  {resource.unlimited
-                    ? "∞"
-                    : resource.dailyTokens + resource.bonusTokens}{" "}
-                  <span>tokens</span>
-                  <ChevronDown size={13} />
-                </button>
+                <Tag color="purple">{profile.plan}</Tag>
                 <button
                   className="notification-button icon-button"
                   onClick={() => setModal({ type: "notifications" })}
@@ -742,7 +803,6 @@ export default function App() {
           title={
             modal.title ||
             {
-              tokens: "Un impulso para entrenar",
               notifications: "Tu centro de novedades",
               mission: "Tu misión del día",
               locked: "Cada paso abre un nuevo camino",
@@ -757,34 +817,6 @@ export default function App() {
           }
           close={() => !busy && setModal(null)}
         >
-          {modal.type === "tokens" && (
-            <>
-              <div className="token-large">
-                <Zap />
-                {resource.dailyTokens}
-                <small>tokens diarios disponibles</small>
-              </div>
-              <p>
-                Recibes 10 tokens cada día. Se consume un token por cada cinco
-                preguntas o tarjetas, redondeando hacia arriba. Las misiones son
-                gratuitas.
-              </p>
-              <div className="modal-metrics">
-                <div>
-                  <strong>{resource.bonusTokens}</strong>
-                  <span>Tokens+ por misiones</span>
-                </div>
-              </div>
-              <Button
-                onClick={() => {
-                  setModal(null);
-                  navigate("/quizzes");
-                }}
-              >
-                Vamos a entrenar
-              </Button>
-            </>
-          )}
           {modal.type === "notifications" && (
             <div className="notice-list">
               <div>
@@ -793,7 +825,9 @@ export default function App() {
                 </span>
                 <div>
                   <strong>Tu ruta está lista</strong>
-                  <p>{completed.length} de 7 misiones completadas.</p>
+                  <p>
+                    {completed.length} misiones completadas en la semana actual.
+                  </p>
                   <button
                     className="text-link"
                     onClick={() => {
@@ -809,108 +843,75 @@ export default function App() {
           )}
           {modal.type === "mission" && (
             <>
-              <Tag color="cyan">SEMANA 01 · DÍA {modal.day + 1}</Tag>
-              <h3 className="modal-big-title">{missions[modal.day]}</h3>
+              <Tag color="cyan">SEMANA {saved.roadmap.currentWeek}</Tag>
+              <h3 className="modal-big-title">
+                {saved.roadmap.currentMission?.missionLabel ||
+                  "Tu misión actual"}
+              </h3>
               <p>
-                Entrena con las preguntas disponibles para esta misión. Responde
-                todas para completar el día y desbloquear el siguiente.
+                {saved.roadmap.currentMission?.plannedRestDay
+                  ? "Hoy toca revisar tu progreso y completar un descanso."
+                  : "La ruta determina las preguntas y el próximo desbloqueo. Puedes pausar la misión y retomarla después."}
               </p>
-              <div className="session-facts">
-                <span>
-                  <BookOpen size={17} /> Hasta 20 preguntas
-                </span>
-                <span>
-                  <Zap size={17} /> Sin costo de tokens
-                </span>
-              </div>
-              <Button
-                className="full"
-                onClick={() =>
-                  startSession(
-                    modal.day === 6 ? "inteligente" : "rapido",
-                    [],
-                    modal.day,
-                  )
-                }
-              >
-                Comenzar misión
+              <Button className="full" onClick={startMission}>
+                Abrir misión actual
               </Button>
             </>
           )}
           {modal.type === "locked" && (
             <>
-              <div className="empty-icon">
-                <LockKeyhole />
-              </div>
               <p>
-                Completa las misiones anteriores para desbloquear{" "}
-                <strong>{missions[modal.day]}</strong>.
+                {modal.message ||
+                  "Esta misión todavía no está disponible. Consulta la fecha de desbloqueo en tu ruta."}
               </p>
-              <Button className="full" onClick={() => setModal(null)}>
-                Entendido
-              </Button>
+              <Button onClick={() => setModal(null)}>Entendido</Button>
             </>
           )}
           {modal.type === "exit" && (
             <>
               <p>
-                Puedes dejar esta actividad pendiente y retomarla después, o
-                cerrarla sin calificar. Los tokens ya utilizados no se
-                devuelven.
+                Tu avance se guarda en tu cuenta. Pausa la actividad para
+                retomarla después.
               </p>
               <div className="modal-actions">
-                <Button secondary onClick={abandon}>
-                  Cerrar actividad
+                <Button secondary onClick={() => setModal(null)}>
+                  Continuar
                 </Button>
-                <Button
-                  onClick={() => {
-                    const next = modal.next || "/inicio";
-                    setModal(null);
-                    go(next);
-                  }}
-                >
-                  Guardar y salir
-                </Button>
+                <Button onClick={abandon}>Pausar y salir</Button>
               </div>
             </>
           )}
           {modal.type === "finish" && (
             <>
               <p>
-                Has respondido{" "}
-                <strong>
-                  {Object.keys(session?.answers || {}).length} de{" "}
-                  {session?.total}
-                </strong>{" "}
-                preguntas. Las que queden sin responder cuentan como errores.
-                Para completar una misión debes responder todas.
+                Has completado {session?.completedItemCount} de {session?.total}{" "}
+                reactivos. El servidor determinará el resultado de la sesión.
+                Una misión requiere completar todos los reactivos.
               </p>
               <div className="modal-actions">
                 <Button secondary onClick={() => setModal(null)}>
                   Continuar
                 </Button>
-                <Button onClick={finishSession}>Ver resultados</Button>
+                <Button disabled={!session?.canFinish} onClick={finishSession}>
+                  Ver resultados
+                </Button>
               </div>
             </>
           )}
           {modal.type === "questionMap" && (
             <>
-              <p>Salta a una pregunta para revisar tu respuesta.</p>
+              <p>
+                Las respuestas siguen la secuencia indicada por el
+                entrenamiento.
+              </p>
               <div className="question-map">
-                {session?.questions.map((q, i) => (
-                  <button
+                {session?.questions.map((q) => (
+                  <span
                     key={q.id}
-                    disabled={busy}
-                    className={
-                      session.answers[q.id] !== undefined ? "answered" : ""
-                    }
-                    onClick={async () => {
-                      await patchSession({ current: i });
-                      setModal(null);
-                    }}
+                    className={q.state === "completed" ? "answered" : ""}
                   >
-                    {i + 1}
-                  </button>
+                    {q.position}
+                  </span>
                 ))}
               </div>
             </>
@@ -932,9 +933,10 @@ export default function App() {
                 <Target />
               </span>
               <p>
-                Tu promedio actual usa las últimas 280 preguntas calificadas, o
-                todas si aún no llegas a esa cantidad. Las tarjetas no modifican
-                tu calificación.
+                Tu promedio actual usa hasta 280 respuestas y pondera la
+                dificultad: baja 1, media 2 y alta 3. Los porcentajes se
+                muestran en escala de 0 a 100. Las actividades de repaso sin
+                calificación no modifican este promedio.
               </p>
               <p>
                 Los resultados y las estadísticas se calculan en el servidor.
@@ -944,10 +946,10 @@ export default function App() {
           {modal.type === "achievement" && (
             <>
               <Mascot name="celebrate" className="celebration-mascot" />
-              <h3>{completed.length} de 7 misiones completadas</h3>
+              <h3>{completed.length} misiones completadas esta semana</h3>
               <p>
-                Termina cada misión para obtener Tokens+ y desbloquear el
-                siguiente día.
+                Completa la misión actual y consulta tu ruta para conocer el
+                próximo desbloqueo.
               </p>
               <Button
                 onClick={() => {
@@ -1115,37 +1117,27 @@ function Landing({ go }) {
 }
 
 function Auth({ route, go, authenticate }) {
-  const signup = route === "/registro";
-  const recovery = route === "/recuperar";
-  const reset = route.startsWith("/restablecer");
-  const token = reset
-    ? new URLSearchParams(route.split("?")[1] || "").get("token")
-    : null;
-  const [step, setStep] = useState(0);
-  const [sent, setSent] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [remember, setRemember] = useState(false);
+  const signup = route === "/registro",
+    recovery = route === "/recuperar",
+    reset = route.startsWith("/restablecer");
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [sent, setSent] = useState(false),
+    [remember, setRemember] = useState(false);
   const [form, setForm] = useState({
     name: "",
-    lastname: "",
     email: "",
     password: "",
     confirmation: "",
-    specialty: "Medicina Interna",
-    target: "2027",
+    specialty: "",
   });
-  const change = (event) =>
-    setForm((old) => ({ ...old, [event.target.name]: event.target.value }));
-  const submit = async (event) => {
-    event.preventDefault();
+  const change = (e) =>
+    setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
+  const submit = async (e) => {
+    e.preventDefault();
     if (busy) return;
     setError("");
-    if (signup && step < 2) {
-      setStep(step + 1);
-      return;
-    }
-    if (reset && form.password !== form.confirmation) {
+    if ((reset || signup) && form.password !== form.confirmation) {
       setError("Las contraseñas no coinciden.");
       return;
     }
@@ -1155,242 +1147,132 @@ function Auth({ route, go, authenticate }) {
         await api.forgot(form.email);
         setSent(true);
       } else if (reset) {
-        await api.reset({ token: token || "", password: form.password });
+        await api.reset({ password: form.password });
         setSent(true);
       } else {
-        const { confirmation, ...registration } = form;
-        await authenticate(
-          signup,
-          signup
-            ? registration
-            : { email: form.email, password: form.password, remember },
-        );
+        const result = await authenticate(signup, { ...form, remember });
+        if (result?.confirmationRequired) setSent(true);
       }
-    } catch (error) {
-      setError(error.message);
+    } catch (err) {
+      setError(err.message);
     } finally {
       setBusy(false);
     }
   };
-  const titles = signup
-    ? ["CREA TU CUENTA.", "ELIGE TU PLAN.", "HABLEMOS DE TU META."]
-    : null;
   return (
     <div className="auth-page">
       <header className="auth-header">
         <Logo onClick={() => go("/bienvenida")} />
-        <button
-          className="back-link"
-          disabled={busy}
-          onClick={() => (step > 0 ? setStep(step - 1) : go("/bienvenida"))}
-        >
+        <button className="back-link" onClick={() => go("/bienvenida")}>
           <ArrowLeft size={17} /> Volver
         </button>
       </header>
       <main id="main-content" tabIndex={-1} className="auth-main">
         <section className="auth-card">
           <div className="eyebrow">
-            {recovery || reset
-              ? "VOLVAMOS A CONECTAR"
-              : signup
-                ? "TU SIGUIENTE CAPÍTULO"
-                : "BIENVENIDO DE VUELTA"}
+            {signup ? "TU SIGUIENTE CAPÍTULO" : "BIENVENIDO A TU ESPACIO"}
           </div>
           <h1>
-            {reset
-              ? "UNA NUEVA CONTRASEÑA."
+            {signup
+              ? "CREA TU CUENTA."
               : recovery
                 ? "RECUPERA TU ACCESO."
-                : signup
-                  ? titles[step]
+                : reset
+                  ? "UNA NUEVA CONTRASEÑA."
                   : "SIGAMOS CRECIENDO."}
           </h1>
           <p className="auth-description">
-            {recovery
-              ? "Te enviaremos un enlace para retomar tu entrenamiento."
-              : reset
-                ? "Elige una contraseña de al menos 10 caracteres."
-                : signup
-                  ? [
-                      "El primer paso hacia tu próxima gran meta.",
-                      "Comienza con el plan gratuito.",
-                      "Personaliza tu camino hacia la residencia.",
-                    ][step]
-                  : "Tu próxima gran conquista empieza con una sesión más."}
+            {signup
+              ? "Completa tus datos. Tu membresía y acceso se asignan en el servicio."
+              : "Tu próxima gran conquista empieza con una sesión más."}
           </p>
           {sent ? (
             <div className="recovery-success">
-              <div className="empty-icon">
-                <Mail />
-              </div>
+              <Mail />
               <h2>{reset ? "Contraseña actualizada" : "Revisa tu correo"}</h2>
               <p>
                 {reset
                   ? "Inicia sesión con tu nueva contraseña."
-                  : "Si el correo tiene una cuenta, recibirás un enlace para recuperar tu acceso. El enlace dura 30 minutos."}
+                  : signup
+                    ? "Si el servicio requiere confirmación, abre el enlace recibido en este navegador. Tu perfil también debe estar habilitado para entrenar."
+                    : "Si tu cuenta admite recuperación, recibirás un enlace. Ábrelo en este mismo navegador para continuar."}
               </p>
-              <Button className="full" onClick={() => go("/login")}>
-                Volver a iniciar sesión
-              </Button>
+              <Button onClick={() => go("/login")}>Volver al acceso</Button>
             </div>
           ) : (
             <form onSubmit={submit} aria-busy={busy}>
-              {(!signup || step === 0) && (
-                <>
-                  {signup && (
-                    <div className="two-fields">
-                      <Field
-                        label="Nombre"
-                        name="name"
-                        autoComplete="given-name"
-                        value={form.name}
-                        onChange={change}
-                        required
-                        maxLength={60}
-                      />
-                      <Field
-                        label="Apellidos"
-                        name="lastname"
-                        autoComplete="family-name"
-                        value={form.lastname}
-                        onChange={change}
-                        maxLength={60}
-                      />
-                    </div>
-                  )}
-                  {!reset && (
-                    <Field
-                      label="Correo electrónico"
-                      icon="Mail"
-                      name="email"
-                      type="email"
-                      autoComplete="email"
-                      placeholder="tu@correo.com"
-                      value={form.email}
-                      onChange={change}
-                      required
-                      maxLength={254}
-                    />
-                  )}
-                  {!recovery && (
-                    <Password
-                      label={
-                        signup || reset ? "Crea una contraseña" : "Contraseña"
-                      }
-                      name="password"
-                      autoComplete={
-                        signup || reset ? "new-password" : "current-password"
-                      }
-                      placeholder={
-                        signup || reset
-                          ? "Al menos 10 caracteres"
-                          : "Tu contraseña"
-                      }
-                      value={form.password}
-                      onChange={change}
-                      minLength={signup || reset ? 10 : 1}
-                      maxLength={128}
-                      required
-                    />
-                  )}
-                  {reset && (
-                    <Password
-                      label="Confirma tu contraseña"
-                      name="confirmation"
-                      autoComplete="new-password"
-                      value={form.confirmation}
-                      onChange={change}
-                      minLength={10}
-                      maxLength={128}
-                      required
-                    />
-                  )}
-                  {!signup && !recovery && !reset && (
-                    <div className="form-extras">
-                      <label className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={remember}
-                          onChange={(e) => setRemember(e.target.checked)}
-                        />{" "}
-                        Recordarme
-                      </label>
-                      <button type="button" onClick={() => go("/recuperar")}>
-                        Olvidé mi contraseña
-                      </button>
-                    </div>
-                  )}
-                </>
+              {signup && (
+                <Field
+                  label="Nombre visible"
+                  name="name"
+                  value={form.name}
+                  onChange={change}
+                  maxLength={100}
+                  required
+                  autoComplete="name"
+                />
               )}
-              {signup && step === 1 && (
-                <div className="signup-plans">
-                  {["Básico", "Premium"].map((plan, i) => (
-                    <button
-                      type="button"
-                      disabled={!!i}
-                      key={plan}
-                      className={`signup-plan ${i ? "" : "selected"}`}
-                    >
-                      <div>
-                        <span className={`radio-dot ${i ? "" : "checked"}`} />
-                        <strong>{plan}</strong>
-                        {!!i && <Crown size={18} />}
-                      </div>
-                      <p>
-                        {i
-                          ? "Más herramientas para tu preparación."
-                          : "Quizzes, flashcards y tu mapa de estudio."}
-                      </p>
-                      <span>
-                        {i
-                          ? "Próximamente"
-                          : "Gratis para comenzar · 10 tokens diarios"}
-                      </span>
-                    </button>
-                  ))}
-                </div>
+              {!reset && (
+                <Field
+                  label="Correo electrónico"
+                  name="email"
+                  type="email"
+                  value={form.email}
+                  onChange={change}
+                  required
+                  autoComplete="email"
+                  placeholder="tu@correo.com"
+                />
               )}
-              {signup && step === 2 && (
-                <>
-                  <label className="field">
-                    <span>Especialidad que te inspira</span>
-                    <select
-                      name="specialty"
-                      value={form.specialty}
-                      onChange={change}
-                    >
-                      {areas.map((a) => (
-                        <option key={a.name}>{a.name}</option>
-                      ))}
-                      <option>Aún estoy explorando</option>
-                    </select>
-                  </label>
-                  <label className="field">
-                    <span>¿Cuándo presentarás el ENARM?</span>
-                    <select name="target" value={form.target} onChange={change}>
-                      {["2026", "2027", "2028", "2029"].map((year) => (
-                        <option key={year}>{year}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="callout">
-                    <Sparkles size={20} />
-                    <p>
-                      No necesitas tenerlo todo resuelto. Lo importante es
-                      empezar.
-                    </p>
-                  </div>
-                </>
+              {!recovery && (
+                <Password
+                  name="password"
+                  label={signup || reset ? "Crea una contraseña" : "Contraseña"}
+                  value={form.password}
+                  onChange={change}
+                  required
+                  minLength={signup || reset ? 10 : 1}
+                  maxLength={128}
+                  autoComplete={
+                    signup || reset ? "new-password" : "current-password"
+                  }
+                />
+              )}
+              {(signup || reset) && (
+                <Password
+                  name="confirmation"
+                  label="Confirma tu contraseña"
+                  value={form.confirmation}
+                  onChange={change}
+                  required
+                  minLength={10}
+                  maxLength={128}
+                  autoComplete="new-password"
+                />
               )}
               {signup && (
-                <div
-                  className="step-indicator"
-                  aria-label={`Paso ${step + 1} de 3`}
-                >
-                  {[0, 1, 2].map((i) => (
-                    <span className={i <= step ? "active" : ""} key={i} />
-                  ))}
-                  <small>Paso {step + 1} de 3</small>
+                <Field
+                  label="Especialidad objetivo (opcional)"
+                  name="specialty"
+                  value={form.specialty}
+                  onChange={change}
+                  maxLength={100}
+                  placeholder="La especialidad que te inspira"
+                />
+              )}
+              {!signup && !recovery && !reset && (
+                <div className="form-extras">
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={remember}
+                      onChange={(e) => setRemember(e.target.checked)}
+                    />{" "}
+                    Recordarme
+                  </label>
+                  <button type="button" onClick={() => go("/recuperar")}>
+                    Olvidé mi contraseña
+                  </button>
                 </div>
               )}
               {error && (
@@ -1398,29 +1280,22 @@ function Auth({ route, go, authenticate }) {
                   {error}
                 </p>
               )}
-              <Button
-                className="full"
-                type="submit"
-                disabled={busy}
-                icon="ArrowRight"
-              >
+              <Button className="full" type="submit" disabled={busy}>
                 {busy
                   ? "Un momento…"
-                  : reset
-                    ? "Guardar contraseña"
+                  : signup
+                    ? "Crear cuenta"
                     : recovery
                       ? "Enviar enlace"
-                      : signup
-                        ? step < 2
-                          ? "Siguiente"
-                          : "Comenzar mi camino"
+                      : reset
+                        ? "Guardar contraseña"
                         : "Iniciar sesión"}
               </Button>
             </form>
           )}
           {!recovery && !reset && (
             <div className="auth-alternative">
-              {signup ? "¿Ya eres parte?" : "¿Es tu primera vez?"}{" "}
+              {signup ? "¿Ya tienes cuenta?" : "¿Es tu primera vez?"}{" "}
               <button
                 disabled={busy}
                 onClick={() => go(signup ? "/login" : "/registro")}
@@ -1430,8 +1305,8 @@ function Auth({ route, go, authenticate }) {
             </div>
           )}
           <p className="auth-disclaimer">
-            <ShieldCheck size={15} /> Tu cuenta y tu progreso se guardan de
-            forma privada.
+            <ShieldCheck size={15} /> Tu cuenta y tu progreso pertenecen al
+            servicio de entrenamiento.
           </p>
         </section>
         <aside className="auth-visual">
@@ -1439,40 +1314,30 @@ function Auth({ route, go, authenticate }) {
           <div className="auth-art-label">
             <Sparkles size={16} /> UN ALIADO EN CADA PASO
           </div>
-          <Mascot name={signup && step === 2 ? "welcome" : "doctor"} />
+          <Mascot name="doctor" />
           <div className="mascot-platform" />
           <blockquote>
             El conocimiento se construye.
             <br />
             <strong>La confianza también.</strong>
           </blockquote>
-          <span className="auth-spark">✦</span>
         </aside>
       </main>
-      <footer className="auth-footer">
-        Cada pequeño paso cuenta. Este puede ser el primero.
-      </footer>
+      <footer className="auth-footer">Cada pequeño paso cuenta.</footer>
     </div>
   );
 }
 
 function Dashboard({
   profile,
-  history,
   completed,
   go,
   openModal,
   stats,
   activeSession,
+  roadmap,
 }) {
-  const avg =
-    stats.recentAverage === null ? "—" : stats.recentAverage.toFixed(1);
-  const day = Math.min(
-    6,
-    missions.findIndex((_, i) => !completed.includes(i)) === -1
-      ? 6
-      : missions.findIndex((_, i) => !completed.includes(i)),
-  );
+  const mission = roadmap.currentMission;
   return (
     <>
       <PageTitle
@@ -1480,8 +1345,7 @@ function Dashboard({
         title={
           <>
             ¡Vamos con todo,{" "}
-            <span className="text-cyan">{profile.name.split(" ")[0]}!</span>{" "}
-            <span className="greeting-spark">✦</span>
+            <span className="text-cyan">{profile.name.split(" ")[0]}!</span>
           </>
         }
         subtitle="Hoy es un buen día para acercarte a tu residencia."
@@ -1496,10 +1360,10 @@ function Dashboard({
           <div>
             <strong>Tienes un entrenamiento pendiente</strong>
             <p>
-              {activeSession.title} · {activeSession.total} preguntas
+              {activeSession.title} · {activeSession.total} reactivos
             </p>
           </div>
-          <Button icon="ArrowRight" onClick={() => go("/actividad")}>
+          <Button onClick={() => go("/actividad")}>
             Continuar entrenamiento
           </Button>
         </div>
@@ -1507,73 +1371,51 @@ function Dashboard({
       <div className="dashboard-grid">
         <section className="mission-card">
           <div className="mission-copy">
-            <Tag color="lime">
-              <span className="status-dot" /> TU MISIÓN DE HOY
-            </Tag>
+            <Tag color="lime">TU MISIÓN DE HOY</Tag>
             <h2>
               Tu meta está
               <br />
               <span>un reto más cerca.</span>
             </h2>
-            <p>{missions[day]}</p>
+            <p>{mission?.missionLabel || "Consulta tu siguiente paso"}</p>
             <div className="mission-meta">
               <span>
-                <BookOpen size={14} /> Hasta 20 preguntas
-              </span>
-              <span>
-                <Zap size={14} /> Sin costo de tokens
+                <BookOpen size={14} />{" "}
+                {mission?.questionCount
+                  ? `${mission.questionCount} reactivos planeados`
+                  : "Tu ruta personal"}
               </span>
             </div>
-            <Button
-              icon="ArrowRight"
-              onClick={() => openModal({ type: "mission", day })}
-            >
-              Comenzar misión
-            </Button>
+            <Button onClick={() => go("/enarmapa")}>Ver mi misión</Button>
             <span className="mission-footnote">
-              El tamaño se ajusta al banco disponible.
+              {roadmap.canAdvanceToday
+                ? "Tu siguiente paso está disponible."
+                : "Consulta tu ruta para conocer el próximo desbloqueo."}
             </span>
           </div>
           <div className="mission-art">
             <div />
             <Mascot name="welcome" />
             <span className="mission-star">✦</span>
-            <span className="mission-bubble">¡Tú puedes!</span>
           </div>
         </section>
-        <section className="streak-card">
-          <div className="streak-heading">
-            <span className="icon-tile pink">
-              <Flame size={21} />
-            </span>
-            <Tag color="pink">¡SIGUE ASÍ!</Tag>
-          </div>
-          <div className="streak-number">
-            {stats.streak} <span>días de racha</span>
-          </div>
-          <p>El hábito hace la diferencia.</p>
-          <div className="week-streak">
-            {stats.weekDays.map((d, i) => (
-              <div key={i}>
-                <span>{d.label}</span>
-                <i
-                  className={`${d.today ? "today" : ""} ${d.studied ? "studied" : "rest"}`}
-                >
-                  {d.studied ? (
-                    <Check size={14} />
-                  ) : d.today ? (
-                    <Flame size={16} />
-                  ) : (
-                    "·"
-                  )}
-                </i>
-              </div>
-            ))}
-          </div>
-          <small>
-            <ShieldCheck size={13} /> Completa un entrenamiento para sumar un
-            día.
-          </small>
+        <section className="panel">
+          <Tag color="cyan">SEMANA {roadmap.currentWeek}</Tag>
+          <h2>Un paso a la vez</h2>
+          <p>
+            {completed.length} de {(roadmap.nodes || []).length} misiones
+            completadas esta semana.
+          </p>
+          <Progress
+            value={
+              roadmap.nodes?.length
+                ? (completed.length / roadmap.nodes.length) * 100
+                : 0
+            }
+          />
+          <Button secondary onClick={() => go("/enarmapa")}>
+            Abrir ENARMapa
+          </Button>
         </section>
       </div>
       <div className="metric-grid">
@@ -1583,7 +1425,7 @@ function Dashboard({
           </span>
           <div>
             <span>
-              Promedio actual{" "}
+              Promedio ponderado actual{" "}
               <button
                 aria-label="Cómo se calcula mi promedio"
                 onClick={() => openModal({ type: "score" })}
@@ -1592,42 +1434,31 @@ function Dashboard({
               </button>
             </span>
             <strong>
-              {avg}
-              <small> / 10</small>
+              {stats.recentAverage === null
+                ? "—"
+                : stats.recentAverage.toFixed(1)}
+              <small> / 100</small>
             </strong>
           </div>
-          <span className="metric-trend">
-            <ArrowUpRight size={14} /> Últimas 280
-          </span>
         </div>
         <div className="metric-card">
           <span className="icon-tile purple">
             <CheckCheck />
           </span>
           <div>
-            <span>Preguntas calificadas</span>
-            <strong>
-              {stats.total}
-              <small> preguntas</small>
-            </strong>
+            <span>Respuestas registradas</span>
+            <strong>{stats.total}</strong>
           </div>
         </div>
-        <button
-          className="metric-card"
-          onClick={() => openModal({ type: "achievement" })}
-        >
+        <div className="metric-card">
           <span className="icon-tile lime">
-            <Trophy />
+            <BookOpen />
           </span>
           <div>
-            <span>Un paso a la vez</span>
-            <strong>
-              {completed.length}
-              <small> / 7 misiones</small>
-            </strong>
+            <span>Preguntas distintas</span>
+            <strong>{stats.unique}</strong>
           </div>
-          <ChevronRight size={18} />
-        </button>
+        </div>
       </div>
       <section className="dashboard-section">
         <div className="section-heading">
@@ -1662,54 +1493,6 @@ function Dashboard({
             ))}
         </div>
       </section>
-      <div className="dashboard-lower">
-        <section className="panel roadmap-preview">
-          <div className="section-heading">
-            <h2>Tu camino, paso a paso</h2>
-            <Tag color="cyan">SEMANA 01</Tag>
-          </div>
-          <div className="mini-route">
-            {missions.map((m, i) => (
-              <button
-                aria-label={`Día ${i + 1}: ${m}`}
-                key={m}
-                className={
-                  completed.includes(i) ? "done" : i === day ? "current" : ""
-                }
-                onClick={() => go("/enarmapa")}
-              >
-                {completed.includes(i) ? (
-                  <Check size={18} />
-                ) : i === day ? (
-                  <Zap size={18} />
-                ) : i === 6 ? (
-                  <Trophy size={16} />
-                ) : (
-                  <LockKeyhole size={14} />
-                )}
-              </button>
-            ))}
-          </div>
-          <div className="panel-bottom">
-            <p>{completed.length} de 7 misiones completadas</p>
-            <button className="text-link" onClick={() => go("/enarmapa")}>
-              Mi ENARMapa <ArrowRight size={15} />
-            </button>
-          </div>
-        </section>
-        <section className="tip-card">
-          <span className="icon-tile pink">
-            <Lightbulb />
-          </span>
-          <div>
-            <span className="eyebrow">UN CONSEJO DE TU COMPAÑERO</span>
-            <h3>No tienes que saberlo todo hoy.</h3>
-            <p>
-              Solo un poco más que ayer. Un repaso de 10 minutos también cuenta.
-            </p>
-          </div>
-        </section>
-      </div>
     </>
   );
 }
@@ -1769,32 +1552,48 @@ function QuizHub({ go }) {
   );
 }
 
-function QuizSetup({ mode, marked, start, go, catalog }) {
-  const a = activities.find((a) => a.id === mode);
-  const [count, setCount] = useState(20);
-  const [selected, setSelected] = useState([]);
-  const [search, setSearch] = useState("");
-  const [topics, setTopics] = useState([]);
-  if (!a)
+function QuizSetup({ mode, marked, start, go }) {
+  const activity = activities.find((a) => a.id === mode),
+    custom = mode === "personalizado",
+    cards = mode === "flashcards";
+  const [count, setCount] = useState(20),
+    [selected, setSelected] = useState([]),
+    [options, setOptions] = useState({ specialties: [], topics: [], tags: [] }),
+    [fine, setFine] = useState({ specialties: [], topics: [], tags: [] }),
+    [loading, setLoading] = useState(false),
+    [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    setFine({ specialties: [], topics: [], tags: [] });
+    setOptions({ specialties: [], topics: [], tags: [] });
+    setError("");
+    if (custom && selected.length) {
+      setLoading(true);
+      api
+        .filterOptions(selected)
+        .then((data) => {
+          if (active) setOptions(data);
+        })
+        .catch((e) => {
+          if (active) setError(e.message);
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+    } else setLoading(false);
+    return () => {
+      active = false;
+    };
+  }, [selected.join("|"), custom]);
+  if (!activity)
     return (
       <EmptyState
-        title="Este reto aún no existe"
-        text="Encuentra tu siguiente actividad en Quizzes."
+        title="Elige una actividad"
         action="Ver quizzes"
         onClick={() => go("/quizzes")}
       />
     );
-  const isCustom = mode === "personalizado";
-  const isCards = mode === "flashcards";
-  const filteredTopics = [
-    ...new Set(
-      catalog.topics
-        .filter((q) => !selected.length || selected.includes(q.area))
-        .map((q) => q.name),
-    ),
-  ].filter((t) =>
-    t.toLocaleLowerCase("es").includes(search.toLocaleLowerCase("es")),
-  );
+  const totalFine = Object.values(fine).flat().length;
   return (
     <>
       <button className="back-link" onClick={() => go("/quizzes")}>
@@ -1802,184 +1601,158 @@ function QuizSetup({ mode, marked, start, go, catalog }) {
       </button>
       <PageTitle
         eyebrow="PREPARA TU ENTRENAMIENTO"
-        title={a.title}
-        subtitle={a.detail}
+        title={activity.title}
+        subtitle={activity.detail}
       />
       <div className="setup-layout">
         <section className="panel setup-form">
-          <div className="setup-section">
-            <div className="numbered-title">
-              <span>01</span>
-              <h2>¿Cuánto quieres practicar?</h2>
-            </div>
-            <p className="muted">Elige el tamaño de tu sesión.</p>
-            <div className="count-options">
-              {[20, 50, 100].map((n) => (
-                <button
-                  key={n}
-                  aria-pressed={count === n}
-                  className={count === n ? "selected" : ""}
-                  onClick={() => setCount(n)}
-                >
-                  <strong>{n}</strong>
-                  <span>{isCards ? "tarjetas" : "preguntas"}</span>
-                  <small>
-                    <Zap size={12} /> Hasta {n / 5} tokens
-                  </small>
-                  {count === n && (
-                    <CheckCircle2 className="count-check" size={18} />
-                  )}
-                </button>
-              ))}
-            </div>
+          <h2>¿Cuánto quieres practicar?</h2>
+          <div className="count-options">
+            {(cards ? [10, 20, 50] : [10, 20, 50, 100]).map((n) => (
+              <button
+                key={n}
+                aria-pressed={count === n}
+                className={count === n ? "selected" : ""}
+                onClick={() => setCount(n)}
+              >
+                <strong>{n}</strong>
+                <span>{cards ? "tarjetas" : "preguntas"}</span>
+              </button>
+            ))}
           </div>
-          {isCustom && (
+          {custom && (
             <>
               <div className="setup-section">
-                <div className="numbered-title">
-                  <span>02</span>
-                  <h2>Elige tus áreas</h2>
-                </div>
-                <p className="muted">Puedes seleccionar más de una.</p>
+                <h2>Elige tus áreas</h2>
                 <div className="area-picker">
                   {areas.map((a) => (
                     <button
-                      className={selected.includes(a.name) ? "selected" : ""}
-                      aria-pressed={selected.includes(a.name)}
                       key={a.name}
-                      onClick={() => {
-                        setSelected((s) =>
-                          s.includes(a.name)
-                            ? s.filter((x) => x !== a.name)
-                            : [...s, a.name],
-                        );
-                        setTopics([]);
-                      }}
+                      aria-pressed={selected.includes(a.name)}
+                      className={selected.includes(a.name) ? "selected" : ""}
+                      onClick={() =>
+                        setSelected((old) =>
+                          old.includes(a.name)
+                            ? old.filter((x) => x !== a.name)
+                            : [...old, a.name],
+                        )
+                      }
                     >
                       <Icon name={a.icon} />
-                      <span>{a.short}</span>
-                      {selected.includes(a.name) && <Check size={16} />}
+                      {a.short}
                     </button>
                   ))}
                 </div>
               </div>
               <div className="setup-section">
-                <div className="numbered-title">
-                  <span>03</span>
-                  <h2>
-                    Afina por tema <small>Opcional</small>
-                  </h2>
-                </div>
-                <Field
-                  label="Buscar temas"
-                  placeholder="Cardiología, farmacología…"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-                <div className="topic-chips">
-                  {filteredTopics.map((t) => (
-                    <button
-                      key={t}
-                      className={topics.includes(t) ? "selected" : ""}
-                      aria-pressed={topics.includes(t)}
-                      onClick={() =>
-                        setTopics((s) =>
-                          s.includes(t) ? s.filter((x) => x !== t) : [...s, t],
-                        )
-                      }
+                <h2>Afina tu selección</h2>
+                <p className="muted">
+                  Hasta cinco especialidades, temas y etiquetas combinados. Se
+                  incluirán preguntas que coincidan con cualquiera de esos
+                  filtros dentro de las áreas elegidas.
+                </p>
+                {loading && <p role="status">Cargando filtros…</p>}
+                {error && (
+                  <p className="error" role="alert">
+                    {error}
+                  </p>
+                )}
+                {Object.entries({
+                  specialties: "Especialidades",
+                  topics: "Temas",
+                  tags: "Etiquetas",
+                }).map(([key, label]) => (
+                  <label className="field" key={key}>
+                    <span>{label}</span>
+                    <select
+                      multiple
+                      size={Math.min(5, Math.max(2, options[key].length))}
+                      value={fine[key]}
+                      disabled={loading || !selected.length}
+                      onChange={(e) => {
+                        const values = Array.from(
+                          e.target.selectedOptions,
+                          (o) => o.value,
+                        );
+                        if (totalFine - fine[key].length + values.length > 5) {
+                          setError(
+                            "Selecciona como máximo cinco filtros finos.",
+                          );
+                          return;
+                        }
+                        setError("");
+                        setFine({ ...fine, [key]: values });
+                      }}
                     >
-                      {t}
-                      {topics.includes(t) && <Check size={13} />}
-                    </button>
-                  ))}
-                  {!filteredTopics.length && (
-                    <p className="muted">
-                      No hay temas disponibles con ese nombre.
-                    </p>
-                  )}
-                </div>
+                      {options[key].map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+                {options.truncated && (
+                  <p className="muted">
+                    El catálogo alcanzó su límite. Reduce las áreas para acotar
+                    la selección.
+                  </p>
+                )}
               </div>
             </>
           )}
-          {!isCustom && (
+          {!custom && (
             <div className="setup-distribution">
               <h3>
-                {isCards
-                  ? "Tus preguntas, a un giro de distancia"
+                {cards
+                  ? "Tus preguntas marcadas"
                   : mode === "inteligente"
-                    ? "Más aprendizaje, menos presión"
-                    : "Un entrenamiento equilibrado"}
+                    ? "Responder, comprender y valorar"
+                    : "Un nuevo entrenamiento"}
               </h3>
               <p>
-                {isCards
-                  ? `Tienes ${marked.length} preguntas marcadas listas para repasar. Revela cada respuesta y evalúa qué tan fácil fue recordarla.`
+                {cards
+                  ? `Tienes ${marked.length} marcas. Revela cada tarjeta antes de valorar su dificultad.`
                   : mode === "inteligente"
-                    ? "Repasa los errores de tus quizzes. Revela la respuesta y evalúa lo que recuerdas; no modifica tu promedio."
-                    : "Practica Medicina Interna, Pediatría, Ginecología y Obstetricia, y Cirugía en una sola sesión."}
+                    ? "Responde cada pregunta y valora su dificultad después de revisar la explicación. Este repaso no modifica tu promedio."
+                    : "Confirma cada respuesta para continuar. El orden y el avance se guardan en tu cuenta."}
               </p>
-              <div className="distribution-bar">
-                <i />
-                <i />
-                <i />
-                <i />
-              </div>
             </div>
           )}
         </section>
         <aside className="setup-summary panel">
-          <span className={`activity-icon ${a.color}`}>
-            <Icon name={a.icon} size={28} />
+          <span className={`activity-icon ${activity.color}`}>
+            <Icon name={activity.icon} size={28} />
           </span>
           <h2>Tu próximo reto</h2>
           <div className="summary-row">
             <span>Actividad</span>
-            <strong>{a.title}</strong>
+            <strong>{activity.title}</strong>
           </div>
           <div className="summary-row">
-            <span>{isCards ? "Tarjetas" : "Preguntas"}</span>
+            <span>Reactivos</span>
             <strong>{count}</strong>
           </div>
-          <div className="summary-row">
-            <span>Áreas</span>
-            <strong>
-              {isCustom && selected.length ? selected.length : "Todas"}
-            </strong>
-          </div>
-          <div className="summary-row">
-            <span>Tiempo estimado</span>
-            <strong>{count} min</strong>
-          </div>
-          <div className="demo-note">
-            <Sparkles size={18} />
-            <p>
-              <strong>Tu sesión real.</strong> Hay {catalog.total} preguntas en
-              el banco. La sesión se ajusta a las preguntas disponibles para tu
-              selección.
-            </p>
-          </div>
+          <p className="muted">
+            La disponibilidad de preguntas y los permisos de tu plan se
+            comprueban al iniciar.
+          </p>
           <Button
             className="full"
-            icon="ArrowRight"
             disabled={
-              (isCustom && !selected.length) || (isCards && !marked.length)
+              loading ||
+              (custom && !selected.length) ||
+              (cards && !marked.length)
             }
-            onClick={() => start(mode, selected, null, topics, count)}
+            onClick={() =>
+              start(mode, selected, null, fine.topics, count, {
+                specialties: fine.specialties,
+                tags: fine.tags,
+              })
+            }
           >
-            Comenzar {isCards ? "repaso" : "quiz"}
+            Comenzar {cards ? "repaso" : "quiz"}
           </Button>
-          {isCustom && !selected.length && (
-            <small className="muted">
-              Selecciona al menos un área para comenzar.
-            </small>
-          )}
-          {isCards && !marked.length && (
-            <button className="text-link" onClick={() => go("/quizzes/rapido")}>
-              Haz un quiz y marca preguntas <ArrowRight size={14} />
-            </button>
-          )}
-          <span className="setup-reassurance">
-            <Heart size={13} /> Cada intento es una oportunidad.
-          </span>
         </aside>
       </div>
     </>
@@ -1995,13 +1768,25 @@ function QuizRunner({
   marked,
   toggleMark,
   finish,
+  refresh,
+  resume,
   openModal,
 }) {
-  const q = session.questions[session.current];
-  const isCards = ["flashcards", "inteligente"].includes(session.mode);
-  const revealed = q.answer !== undefined;
-  const title = session.title;
-  const selected = session.answers[q.id];
+  const q =
+    session.current === null ? null : session.questions[session.current];
+  const [draft, setDraft] = useState(null);
+  useEffect(() => setDraft(null), [q?.id]);
+  const cards = session.isCards,
+    showAnswer = q?.answer !== undefined;
+  if (session.status === "paused")
+    return (
+      <EmptyState
+        title="Entrenamiento en pausa"
+        text="Tu avance está guardado. Reanuda para continuar."
+        action="Reanudar entrenamiento"
+        onClick={() => resume(session.id)}
+      />
+    );
   return (
     <div className="quiz-runner">
       <div className="runner-top">
@@ -2009,68 +1794,80 @@ function QuizRunner({
           className="back-link"
           onClick={() => openModal({ type: "exit", next: "/quizzes" })}
         >
-          <X size={18} /> Salir
+          <X size={18} /> Pausar
         </button>
-        <span>{title}</span>
-        {!isCards ? (
-          <button
-            className="icon-button"
-            aria-label="Abrir mapa de preguntas"
-            onClick={() => openModal({ type: "questionMap" })}
-          >
-            <LayoutGrid size={19} />
-          </button>
-        ) : (
-          <Layers size={20} />
-        )}
+        <span>{session.title}</span>
+        <button className="text-link" disabled={busy} onClick={refresh}>
+          Actualizar estado
+        </button>
       </div>
       <div className="runner-progress-label">
         <span>
-          {isCards ? "Tarjeta" : "Pregunta"}{" "}
-          <strong>{session.current + 1}</strong> de {session.questions.length}
+          {q
+            ? `${cards ? "Tarjeta" : "Pregunta"} ${q.position} de ${session.total}`
+            : "Reactivos completados"}
         </span>
-        <span>
-          {isCards
-            ? `${session.ratings.length} repasadas`
-            : `${Object.keys(session.answers).length} respondidas`}
-        </span>
+        <span>{session.completedItemCount} completados</span>
       </div>
       <Progress
-        value={((session.current + 1) / session.questions.length) * 100}
+        value={
+          session.total ? (session.completedItemCount / session.total) * 100 : 0
+        }
       />
-      <div className="question-meta">
-        <Tag color="cyan">{q.area}</Tag>
-        <button
-          className={`mark-button ${marked.includes(q.id) ? "marked" : ""}`}
-          disabled={busy}
-          onClick={() => toggleMark(q.id)}
-          aria-pressed={marked.includes(q.id)}
-        >
-          <Bookmark
-            size={17}
-            fill={marked.includes(q.id) ? "currentColor" : "none"}
-          />
-          <span>{marked.includes(q.id) ? "Marcada" : "Marcar"}</span>
-        </button>
-      </div>
-      <section className={`question-panel ${isCards ? "flashcard" : ""}`}>
-        <span className="eyebrow">
-          {isCards
-            ? revealed
-              ? "CONECTA LO QUE APRENDISTE"
-              : "PIENSA ANTES DE GIRAR"
-            : q.topic.toUpperCase()}
-        </span>
-        <h1>{q.text}</h1>
-        {isCards ? (
-          <>
-            {revealed ? (
-              <div className="flash-answer">
-                <Tag color="lime">RESPUESTA</Tag>
-                <h2>{q.options[q.answer]}</h2>
-                <p>{q.explanation}</p>
+      {q && (
+        <>
+          <div className="question-meta">
+            <Tag color="cyan">{cards ? "FLASHCARD" : "ENTRENAMIENTO"}</Tag>
+            <button
+              className={`mark-button ${marked.includes(q.globalKey) ? "marked" : ""}`}
+              disabled={busy || !q.globalKey}
+              onClick={() => toggleMark(q.globalKey)}
+              aria-pressed={marked.includes(q.globalKey)}
+            >
+              <Bookmark size={17} />
+              {marked.includes(q.globalKey) ? "Marcada" : "Marcar"}
+            </button>
+          </div>
+          <section className={`question-panel ${cards ? "flashcard" : ""}`}>
+            {q.caseText && (
+              <div className="clinical-case">
+                <span className="eyebrow">CASO CLÍNICO</span>
+                <p>{q.caseText}</p>
               </div>
-            ) : (
+            )}
+            <h1>{q.text}</h1>
+            {!cards && (
+              <div className="answer-options">
+                {q.options.map((option, i) => (
+                  <button
+                    key={i}
+                    disabled={
+                      busy ||
+                      session.answers[q.id] !== undefined ||
+                      session.nextAction !== "answer_question"
+                    }
+                    onClick={() => setDraft(i)}
+                    aria-pressed={(session.answers[q.id] ?? draft) === i}
+                    className={
+                      (session.answers[q.id] ?? draft) === i ? "selected" : ""
+                    }
+                  >
+                    <span className="answer-letter">{"ABCD"[i]}</span>
+                    <span>{option}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {showAnswer && (
+              <div className="flash-answer">
+                <Tag color="lime">
+                  {q.isCorrect === false ? "PARA REFORZAR" : "RESPUESTA"}
+                </Tag>
+                <h2>{q.options[q.answer]}</h2>
+                {q.explanation && <p>{q.explanation}</p>}
+              </div>
+            )}
+            {cards && !showAnswer && (
               <button
                 className="reveal-button"
                 disabled={busy}
@@ -2078,85 +1875,62 @@ function QuizRunner({
               >
                 <RotateCcw size={24} />
                 <span>Revelar respuesta</span>
-                <small>Tómate tu tiempo. Recordar es entrenar.</small>
               </button>
             )}
-          </>
-        ) : (
-          <div className="answer-options">
-            {q.options.map((o, i) => (
-              <button
-                key={o}
-                disabled={busy}
-                onClick={() => patchSession({ answers: { [q.id]: i } })}
-                aria-pressed={selected === i}
-                className={selected === i ? "selected" : ""}
-              >
-                <span className="answer-letter">{"ABCD"[i]}</span>
-                <span>{o}</span>
-                <span className="answer-radio">
-                  {selected === i && <Check size={14} />}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
-      {isCards ? (
-        revealed && (
-          <div className="flash-rating">
-            <p>¿Qué tan fácil fue recordarlo?</p>
-            <div>
-              {[
-                { name: "Difícil", color: "pink", icon: "RotateCcw" },
-                { name: "Regular", color: "purple", icon: "BrainCircuit" },
-                { name: "Fácil", color: "lime", icon: "Check" },
-              ].map((r) => (
-                <button
-                  key={r.name}
-                  className={r.color}
-                  disabled={busy || session.ratedIds.includes(q.id)}
-                  onClick={() => rate(q.id, r.name)}
-                >
-                  <Icon name={r.icon} size={19} />
-                  {r.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        )
-      ) : (
-        <div className="runner-controls">
-          <Button
-            secondary
-            icon="ArrowLeft"
-            disabled={session.current === 0}
-            onClick={() => patchSession({ current: session.current - 1 })}
-          >
-            Anterior
-          </Button>
-          {session.current === session.questions.length - 1 ? (
-            <Button icon="Check" onClick={() => openModal({ type: "finish" })}>
-              Terminar quiz
-            </Button>
-          ) : (
+          </section>
+          {session.nextAction === "answer_question" && !cards && (
             <Button
-              icon="ArrowRight"
-              onClick={() => patchSession({ current: session.current + 1 })}
+              className="full"
+              disabled={busy || draft === null}
+              onClick={() => patchSession({ answers: { [q.id]: draft } })}
             >
-              Siguiente
+              Confirmar respuesta
             </Button>
           )}
-        </div>
+          {(session.nextAction === "rate_question" ||
+            (cards &&
+              showAnswer &&
+              session.nextAction === "review_flashcard")) && (
+            <div className="flash-rating">
+              <p>¿Qué dificultad tuvo esta pregunta?</p>
+              <div>
+                {[
+                  { name: "Difícil", color: "pink" },
+                  { name: "Regular", color: "purple" },
+                  { name: "Fácil", color: "lime" },
+                ].map((r) => (
+                  <button
+                    key={r.name}
+                    className={r.color}
+                    disabled={busy || session.ratedIds.includes(q.id)}
+                    onClick={() => rate(q.id, r.name)}
+                  >
+                    {r.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
-      {isCards && session.ratedIds.length === session.total && (
-        <Button onClick={finish}>Terminar repaso</Button>
+      {session.canFinish && (
+        <Button secondary onClick={() => openModal({ type: "finish" })}>
+          Finalizar y ver resultado
+        </Button>
+      )}
+      {session.finishBlockedReason && (
+        <p className="muted">
+          {session.finishBlockedReason === "pending_question_rating"
+            ? "Valora la pregunta pendiente para continuar."
+            : session.finishBlockedReason ===
+                "enarmapa_requires_full_completion"
+              ? "Completa todos los reactivos para terminar esta misión."
+              : "Continúa con el siguiente paso del entrenamiento."}
+        </p>
       )}
       <div className="runner-note">
-        <ShieldCheck size={14} />{" "}
-        {q.sample
-          ? "Pregunta de prueba: contenido pendiente de validación."
-          : "Tus respuestas se guardan automáticamente."}
+        <ShieldCheck size={14} /> Confirma cada respuesta para guardarla. Ante
+        una desconexión, actualiza el estado antes de repetir.
       </div>
     </div>
   );
@@ -2213,12 +1987,12 @@ function Results({ result, go, marked, toggleMark }) {
                         : "Para reforzar"}
                   </Tag>
                   <button
-                    className={`mark-button ${marked.includes(q.id) ? "marked" : ""}`}
-                    onClick={() => toggleMark(q.id)}
-                    aria-pressed={marked.includes(q.id)}
+                    className={`mark-button ${marked.includes(q.globalKey) ? "marked" : ""}`}
+                    onClick={() => toggleMark(q.globalKey)}
+                    aria-pressed={marked.includes(q.globalKey)}
                   >
                     <Bookmark size={16} />
-                    {marked.includes(q.id) ? "Marcada" : "Marcar"}
+                    {marked.includes(q.globalKey) ? "Marcada" : "Marcar"}
                   </button>
                 </div>
                 <span className="eyebrow">
@@ -2234,11 +2008,15 @@ function Results({ result, go, marked, toggleMark }) {
                   </p>
                 )}
                 <p className="right-answer">
-                  <Check size={17} /> {q.options[q.answer]}
+                  <Check size={17} />{" "}
+                  {q.options[q.answer] || "Respuesta no disponible"}
                 </p>
                 <div className="explanation">
                   <Lightbulb size={18} />
-                  <p>{q.explanation}</p>
+                  <p>
+                    {q.explanation ||
+                      "El servicio no proporcionó una explicación."}
+                  </p>
                 </div>
               </article>
             );
@@ -2281,21 +2059,23 @@ function Results({ result, go, marked, toggleMark }) {
           <>
             <div>
               <strong className="text-cyan">
-                {result.score}
+                {result.score ?? "—"}
                 <small>%</small>
               </strong>
-              <span>Tu resultado</span>
+              <span>Resultado ponderado</span>
             </div>
             <div>
               <strong>
-                {result.correct}
+                {result.correct ?? "—"}
                 <small>/{result.total}</small>
               </strong>
               <span>Respuestas correctas</span>
             </div>
             <div>
               <strong className="text-pink">
-                {result.total - result.correct}
+                {result.result?.answeredCount === null
+                  ? "—"
+                  : Math.max(0, result.total - (result.correct ?? 0))}
               </strong>
               <span>Para seguir aprendiendo</span>
             </div>
@@ -2323,8 +2103,15 @@ function Results({ result, go, marked, toggleMark }) {
   );
 }
 
-function Roadmap({ completed, streak, openModal }) {
-  const next = missions.findIndex((_, i) => !completed.includes(i));
+function Roadmap({ roadmap, openModal, completeRest }) {
+  const labels = {
+    completed: "Completada",
+    in_progress: "En curso",
+    available: "Disponible",
+    locked_until_tomorrow: "Próximo desbloqueo",
+    locked: "Bloqueada",
+  };
+  const nodes = roadmap.nodes || [];
   return (
     <>
       <PageTitle
@@ -2334,15 +2121,7 @@ function Roadmap({ completed, streak, openModal }) {
             Este es <span className="text-cyan">tu camino.</span>
           </>
         }
-        subtitle="Siete días, siete oportunidades de crecer. Vamos paso a paso."
-        action={
-          <button
-            className="streak-badge"
-            onClick={() => openModal({ type: "achievement" })}
-          >
-            <Flame size={20} /> {streak} días de racha
-          </button>
-        }
+        subtitle={`Semana ${roadmap.currentWeek} · Fecha de estudio ${roadmap.today}`}
       />
       <div className="roadmap-layout">
         <section className="map-panel">
@@ -2351,314 +2130,229 @@ function Roadmap({ completed, streak, openModal }) {
               <Map />
             </span>
             <div>
-              <span className="eyebrow">SEMANA 01</span>
-              <h2>Conoce tu punto de partida</h2>
+              <span className="eyebrow">SEMANA {roadmap.currentWeek}</span>
+              <h2>Tu ruta de entrenamiento</h2>
             </div>
-            <span>{completed.length}/7</span>
           </div>
           <div className="roadmap-track">
-            {missions.map((m, i) => {
-              const done = completed.includes(i);
-              const active = next === i;
+            {nodes.map((node, i) => {
+              const done = node.status === "completed",
+                active = ["available", "in_progress"].includes(node.status);
               return (
                 <div
+                  key={node.mapDay}
                   className={`roadmap-stop ${i % 2 ? "right" : "left"} ${done ? "done" : active ? "current" : "locked"}`}
-                  key={m}
                 >
                   <button
                     className="map-node"
-                    aria-label={`Día ${i + 1}: ${m}${done ? ", completada" : active ? ", disponible" : ", bloqueada"}`}
-                    onClick={() =>
-                      openModal({
-                        type: done || active ? "mission" : "locked",
-                        day: i,
-                      })
-                    }
+                    disabled={!active}
+                    aria-label={`Día ${node.mapDay}: ${node.missionLabel}, ${labels[node.status]}`}
+                    onClick={() => openModal({ type: "mission" })}
                   >
                     {done ? (
                       <Check size={29} />
                     ) : active ? (
-                      <Zap size={30} fill="currentColor" />
-                    ) : i === 6 ? (
-                      <Trophy size={27} />
+                      <Zap size={30} />
                     ) : (
                       <LockKeyhole size={22} />
                     )}
                   </button>
-                  <button
-                    className="map-stop-label"
-                    onClick={() =>
-                      openModal({
-                        type: done || active ? "mission" : "locked",
-                        day: i,
-                      })
-                    }
-                  >
+                  <div className="map-stop-label">
                     <span>
-                      DÍA {i + 1} {done && "· COMPLETADO"}{" "}
-                      {active && "· TE TOCA"}
+                      DÍA {node.mapDay} · {labels[node.status]}
                     </span>
-                    <strong>{m}</strong>
-                    {active && (
+                    <strong>{node.missionLabel}</strong>
+                    {node.execution?.fallbackUsed && (
                       <small>
-                        ¡Vamos a por ello! <ArrowRight size={13} />
+                        Actividad ajustada:{" "}
+                        {node.execution.fallbackReason ||
+                          "según disponibilidad"}
                       </small>
                     )}
-                  </button>
+                  </div>
                 </div>
               );
             })}
           </div>
-          <div className="map-finish">
-            <Trophy size={20} />
-            <span>Tu primera insignia está en camino.</span>
-          </div>
         </section>
         <aside className="map-aside">
-          <div className="panel week-summary">
+          <section className="panel week-summary">
             <Tag color="lime">TU AVANCE</Tag>
             <h2>
-              Una semana
-              <br />
-              para descubrirte.
+              {nodes.filter((n) => n.status === "completed").length} de{" "}
+              {nodes.length} misiones
             </h2>
             <p>
-              Conoce tus fortalezas y encuentra las áreas donde puedes mejorar.
+              {roadmap.canAdvanceToday
+                ? "Continúa con la misión actual."
+                : "La ruta determina cuándo podrás avanzar de nuevo."}
             </p>
-            <Progress value={(completed.length / 7) * 100} />
-            <span>{completed.length} de 7 misiones completadas</span>
-            <div className="map-reward">
-              <Trophy size={30} />
-              <div>
-                <strong>Primer mapa clínico</strong>
-                <small>Completa tu primera semana.</small>
-              </div>
-            </div>
-          </div>
+            <Button
+              className="full"
+              disabled={
+                !roadmap.currentMission ||
+                (!roadmap.canAdvanceToday &&
+                  roadmap.currentMission.status !== "in_progress")
+              }
+              onClick={() => openModal({ type: "mission" })}
+            >
+              Abrir misión actual
+            </Button>
+            {roadmap.currentMission?.plannedRestDay && (
+              <>
+                <p>Revisa tus estadísticas antes de completar el descanso.</p>
+                <RestMission complete={completeRest} />
+              </>
+            )}
+          </section>
           <div className="map-mascot">
             <Mascot name="doctor" />
-            <p>
-              “No corras. Solo no dejes
-              <br />
-              de dar el siguiente paso.”
-            </p>
           </div>
         </aside>
       </div>
     </>
   );
 }
+function RestMission({ complete }) {
+  const [viewed, setViewed] = useState(false),
+    [summary, setSummary] = useState(null),
+    [error, setError] = useState("");
+  return (
+    <>
+      <Button
+        secondary
+        onClick={async () => {
+          try {
+            setSummary(await api.stats());
+            setViewed(true);
+            setError("");
+          } catch (e) {
+            setError(e.message);
+          }
+        }}
+      >
+        Revisar mi progreso
+      </Button>
+      {summary && (
+        <p>
+          Promedio ponderado: {summary.average ?? "—"} / 100 · {summary.total}{" "}
+          respuestas
+        </p>
+      )}
+      {error && <p className="error">{error}</p>}
+      <Button disabled={!viewed} onClick={complete}>
+        Completar descanso
+      </Button>
+    </>
+  );
+}
 
-function Stats({ initialStats, notify }) {
-  const [period, setPeriod] = useState("week");
-  const [stats, setStats] = useState(initialStats);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let active = true;
+function Stats({ initialStats, premium }) {
+  const [stats, setStats] = useState(initialStats),
+    [analysis, setAnalysis] = useState(null),
+    [error, setError] = useState(""),
+    [loading, setLoading] = useState(false);
+  const advanced = async () => {
     setLoading(true);
     setError("");
-    api
-      .stats(period)
-      .then((data) => {
-        if (active) setStats(data);
-      })
-      .catch((error) => {
-        if (active) setError(error.message);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [period]);
-  const points = stats.chart.map((day, i) => ({
-    ...day,
-    x: 50 + (i * 600) / (stats.chart.length - 1),
-    y: 210 - (day.average || 0) * 18,
-  }));
-  const segments = [];
-  let segment = [];
-  points.forEach((point) => {
-    if (point.average === null) {
-      if (segment.length) segments.push(segment);
-      segment = [];
-    } else segment.push(point);
-  });
-  if (segment.length) segments.push(segment);
+    try {
+      setAnalysis(await api.analysis());
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
   return (
     <>
       <PageTitle
         eyebrow="EL PROGRESO TAMBIÉN SE PUEDE VER"
         title="Tu esfuerzo, en perspectiva."
-        subtitle="Resultados de los quizzes que has completado."
+        subtitle="Promedios ponderados y porcentajes de acierto son métricas distintas."
       />
       <div className="metric-grid">
         {[
           {
-            label: "Promedio general",
-            value: stats.average === null ? "—" : stats.average.toFixed(1),
-            unit: "/ 10",
-            icon: "Target",
-            color: "cyan",
+            label: "Promedio ponderado actual",
+            value: stats.recentAverage,
+            unit: "/ 100",
           },
           {
-            label: "Preguntas calificadas",
-            value: stats.total,
-            unit: "preguntas",
-            icon: "CheckCheck",
-            color: "purple",
+            label: "Promedio ponderado histórico",
+            value: stats.average,
+            unit: "/ 100",
           },
-          {
-            label: "Días de racha",
-            value: stats.streak,
-            unit: "días",
-            icon: "Flame",
-            color: "pink",
-          },
+          { label: "Respuestas registradas", value: stats.total, unit: "" },
         ].map((item) => (
           <div className="metric-card" key={item.label}>
-            <span className={`icon-tile ${item.color}`}>
-              <Icon name={item.icon} />
-            </span>
             <div>
               <span>{item.label}</span>
               <strong>
-                {item.value}
+                {item.value === null
+                  ? "—"
+                  : typeof item.value === "number"
+                    ? Number(item.value.toFixed(1))
+                    : item.value}
                 <small> {item.unit}</small>
               </strong>
             </div>
           </div>
         ))}
       </div>
-      <section className="panel progress-chart" aria-busy={loading}>
-        <div className="section-heading">
-          <div>
-            <span className="eyebrow">TU CONSTANCIA, DÍA A DÍA</span>
-            <h2>Evolución del promedio</h2>
-          </div>
-          <div className="filter-tabs">
-            <button
-              className={period === "week" ? "active" : ""}
-              onClick={() => setPeriod("week")}
-            >
-              Esta semana
-            </button>
-            <button
-              className={period === "month" ? "active" : ""}
-              onClick={() => setPeriod("month")}
-            >
-              Últimas 4 semanas
-            </button>
-          </div>
+      <section className="panel">
+        <h2>Evolución por semana</h2>
+        <div className="api-weekly-list">
+          {stats.weekly.map((week, i) => (
+            <div className="summary-row" key={`${week.week}-${i}`}>
+              <span>
+                Semana {week.week}
+                <small>
+                  {" "}
+                  {week.startDate} — {week.closeDate}
+                </small>
+              </span>
+              <strong>
+                {week.average === null
+                  ? "—"
+                  : `${Number(week.average.toFixed(1))}%`}{" "}
+                <small>· {week.answered} respuestas</small>
+              </strong>
+            </div>
+          ))}
         </div>
-        {error ? (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        ) : loading ? (
-          <p className="muted">Actualizando tu gráfica…</p>
-        ) : (
-          <>
-            <svg
-              viewBox="0 0 700 250"
-              role="img"
-              aria-label="Promedio de quizzes completados por periodo"
-              className="real-stats-chart"
-            >
-              {[0, 5, 10].map((n) => (
-                <g key={n}>
-                  <line
-                    x1="40"
-                    x2="670"
-                    y1={210 - n * 18}
-                    y2={210 - n * 18}
-                    stroke="#ffffff12"
-                  />
-                  <text x="12" y={215 - n * 18} fill="#a89bbf" fontSize="12">
-                    {n}
-                  </text>
-                </g>
-              ))}
-              {segments.map((group, i) => (
-                <polyline
-                  key={i}
-                  fill="none"
-                  stroke="#a2ee39"
-                  strokeWidth="3"
-                  points={group.map((p) => `${p.x},${p.y}`).join(" ")}
-                />
-              ))}
-              {points.map((p) => (
-                <g key={p.day}>
-                  {p.average !== null && (
-                    <>
-                      <circle cx={p.x} cy={p.y} r="5" fill="#a2ee39" />
-                      <text
-                        x={p.x}
-                        y={p.y - 12}
-                        textAnchor="middle"
-                        fill="#fff"
-                        fontSize="12"
-                      >
-                        {p.average.toFixed(1)}
-                      </text>
-                    </>
-                  )}
-                  <text
-                    x={p.x}
-                    y="240"
-                    textAnchor="middle"
-                    fill="#a89bbf"
-                    fontSize="12"
-                  >
-                    {p.label}
-                  </text>
-                </g>
-              ))}
-            </svg>
-            {!points.some((p) => p.average !== null) && (
-              <p className="muted">
-                Completa tu primer quiz para ver tu evolución.
-              </p>
-            )}
-          </>
+        {!stats.weekly.length && (
+          <p className="muted">Tu historial de entrenamiento aparecerá aquí.</p>
         )}
       </section>
       <div className="stats-summary-grid">
         <section className="panel">
-          <h2>Así vas en cada área</h2>
+          <h2>Aciertos por área</h2>
           <div className="area-stats-list">
             {stats.areaStats.map((area) => (
               <div className="real-area-stat" key={area.name}>
                 <div>
-                  <span className={`icon-tile ${area.color}`}>
-                    <Icon name={area.icon} />
-                  </span>
                   <strong>{area.name}</strong>
                   <span>
-                    {area.score === null ? "Sin intentos" : `${area.score}%`}
+                    {area.score === null
+                      ? "Sin respuestas"
+                      : `${Number(area.score.toFixed(1))}%`}
                   </span>
                 </div>
-                <Progress value={area.score || 0} color={area.color} />
-                <small className="muted">
-                  {area.correct} aciertos de {area.total} preguntas
+                <Progress value={area.score || 0} />
+                <small>
+                  {area.correct} aciertos de {area.total} respuestas
                 </small>
               </div>
             ))}
           </div>
         </section>
         <section className="panel">
-          <span className="icon-tile cyan">
-            <BookOpen />
-          </span>
           <h2>Tu recorrido por el banco</h2>
           <p>
-            Has practicado {stats.unique} preguntas distintas de{" "}
-            {stats.bankTotal} disponibles.
+            {stats.unique} preguntas distintas · {stats.bankTotal ?? "—"}{" "}
+            disponibles en la versión publicada.
           </p>
-          <Progress value={stats.exposure} />
+          {stats.exposure !== null && <Progress value={stats.exposure} />}
           <div className="modal-metrics">
             <div>
               <strong>{stats.correct}</strong>
@@ -2666,26 +2360,86 @@ function Stats({ initialStats, notify }) {
             </div>
             <div>
               <strong>{stats.incorrect}</strong>
-              <span>Errores y sin responder</span>
+              <span>Respuestas incorrectas</span>
             </div>
           </div>
           <p className="muted">
-            {stats.bestArea
-              ? `Tu mejor resultado: ${stats.bestArea.name}.`
-              : "Tu siguiente entrenamiento abrirá el camino."}
+            Las actividades sin calificación no modifican el promedio.
           </p>
         </section>
       </div>
+      <section className="panel">
+        <h2>Análisis avanzado</h2>
+        <p>
+          {premium
+            ? "Consulta tus prioridades y recuperación de errores."
+            : "Disponible con una membresía Premium activa."}
+        </p>
+        <Button disabled={!premium || loading} onClick={advanced}>
+          {loading ? "Consultando…" : "Consultar análisis"}
+        </Button>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+        {analysis && (
+          <>
+            <h3>Prioridades de estudio</h3>
+            {analysis.priorities.map((p, i) => (
+              <div className="summary-row" key={i}>
+                <span>
+                  {p.area} · {p.specialty} · {p.topic}
+                </span>
+                <strong>{p.priority}</strong>
+              </div>
+            ))}
+            <p>
+              Preguntas con errores:{" "}
+              {analysis.failureAnalysis.questionsWithErrors} · Recuperadas
+              actualmente: {analysis.failureAnalysis.currentState.recovered}
+            </p>
+            {!analysis.priorities.length && (
+              <p className="muted">Todavía no hay prioridades calculadas.</p>
+            )}
+          </>
+        )}
+      </section>
     </>
   );
 }
 
-function HistoryPage({ history, go, openModal }) {
-  const [filter, setFilter] = useState("Todas");
-  const all = history;
-  const filtered = all.filter(
+function HistoryPage({ history, pagination, open, go }) {
+  const [items, setItems] = useState(history),
+    [page, setPage] = useState(pagination),
+    [filter, setFilter] = useState("Todas"),
+    [loading, setLoading] = useState(false),
+    [error, setError] = useState("");
+  const more = async () => {
+    if (loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const next = await api.history({ offset: page.offset + page.limit });
+      setItems((old) => [
+        ...old,
+        ...next.items.filter((item) => !old.some((x) => x.id === item.id)),
+      ]);
+      setPage(next.pagination);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  const filtered = items.filter(
     (h) =>
-      filter === "Todas" || (filter === "Quizzes" ? !h.isCards : h.isCards),
+      filter === "Todas" ||
+      (filter === "En curso"
+        ? h.status !== "completed"
+        : filter === "Quizzes"
+          ? !h.isCards
+          : h.isCards),
   );
   return (
     <>
@@ -2695,14 +2449,14 @@ function HistoryPage({ history, go, openModal }) {
       <PageTitle
         eyebrow="CADA SESIÓN DEJA HUELLA"
         title="Tu historial de esfuerzo."
-        subtitle="Regresa a lo que aprendiste. Descubre cuánto has avanzado."
+        subtitle="Retoma actividades pendientes o revisa tus resultados."
       />
       <div className="filter-tabs">
-        {["Todas", "Quizzes", "Repasos"].map((f) => (
+        {["Todas", "Quizzes", "Flashcards", "En curso"].map((f) => (
           <button
             key={f}
             className={filter === f ? "active" : ""}
-            onClick={() => go(`/resultados/${h.id}`)}
+            onClick={() => setFilter(f)}
           >
             {f}
           </button>
@@ -2713,11 +2467,7 @@ function HistoryPage({ history, go, openModal }) {
           <button
             className="panel history-row"
             key={h.id}
-            onClick={() =>
-              h.id.startsWith("sample")
-                ? openModal({ type: "sample", item: h })
-                : go(`/resultados/${h.id}`)
-            }
+            onClick={() => open(h)}
           >
             <span className={`icon-tile ${h.isCards ? "cyan" : "purple"}`}>
               <Icon name={h.isCards ? "Layers" : "Zap"} />
@@ -2725,27 +2475,42 @@ function HistoryPage({ history, go, openModal }) {
             <div>
               <h3>{h.title}</h3>
               <p>
-                {h.date} · {h.total} {h.isCards ? "tarjetas" : "preguntas"}
+                {h.date} · {h.total} reactivos
               </p>
             </div>
             <div className="history-score">
-              <strong>{h.isCards ? "Completado" : `${h.score}%`}</strong>
+              <strong>
+                {h.status !== "completed"
+                  ? "Continuar"
+                  : h.isCards
+                    ? "Completado"
+                    : h.score === null
+                      ? "—"
+                      : `${h.score}%`}
+              </strong>
               <small>
-                {h.isCards ? "Ver resumen" : `${h.correct} aciertos`}
+                {h.status === "paused"
+                  ? "En pausa"
+                  : h.status === "completed"
+                    ? "Ver resultado"
+                    : "En curso"}
               </small>
             </div>
             <ChevronRight size={20} />
           </button>
         ))}
-        {!filtered.length && (
-          <EmptyState
-            title="Aquí empieza tu siguiente hábito"
-            text="Completa un repaso para verlo en tu historial."
-            action="Explorar flashcards"
-            onClick={() => go("/quizzes/flashcards")}
-          />
-        )}
       </div>
+      {!filtered.length && (
+        <p className="muted">
+          No hay actividades en este filtro dentro de las páginas cargadas.
+        </p>
+      )}
+      {error && <p className="error">{error}</p>}
+      {page?.hasMore && (
+        <Button secondary disabled={loading} onClick={more}>
+          {loading ? "Cargando…" : "Cargar más actividades"}
+        </Button>
+      )}
     </>
   );
 }
@@ -2773,8 +2538,7 @@ function Profile({ profile, marked, go, openModal }) {
           <Tag color="cyan">FUTURO RESIDENTE</Tag>
           <div className="profile-goal">
             <span>MI META</span>
-            <h3>{profile.specialty}</h3>
-            <small>ENARM {profile.target}</small>
+            <h3>{profile.specialty || "Especialidad por definir"}</h3>
           </div>
           <Button
             secondary
@@ -2855,82 +2619,44 @@ function Plans({ profile }) {
   return (
     <>
       <PageTitle
-        eyebrow="UNA META. DISTINTAS FORMAS DE LLEGAR."
-        title={
-          <>
-            Dale espacio a <span className="text-pink">tu potencial.</span>
-          </>
-        }
-        subtitle="Tu cuenta incluye el plan Básico. Premium estará disponible más adelante."
+        eyebrow="TU MEMBRESÍA"
+        title="Tu espacio para avanzar."
+        subtitle="Los permisos se determinan por tu membresía activa."
       />
       <div className="plans-grid">
-        {["Básico", "Premium"].map((p, i) => (
-          <section className={`panel plan-card ${i ? "premium" : ""}`} key={p}>
-            {i ? (
-              <Tag color="pink">
-                <Sparkles size={13} /> PARA IR UN PASO MÁS ALLÁ
-              </Tag>
-            ) : (
-              <Tag color="cyan">EMPIEZA A TU RITMO</Tag>
-            )}
+        {["Básico", "Premium"].map((plan, i) => (
+          <section
+            className={`panel plan-card ${i ? "premium" : ""}`}
+            key={plan}
+          >
             <Icon name={i ? "Crown" : "Zap"} size={34} />
-            <h2>{p}</h2>
+            <h2>{plan}</h2>
             <p>
               {i
-                ? "Más posibilidades para tu preparación."
-                : "Todo lo que necesitas para dar el primer paso."}
+                ? "Incluye acceso al análisis avanzado de desempeño."
+                : "Tu acceso al entrenamiento depende de los permisos asignados a tu cuenta."}
             </p>
-            <div className="plan-price">
-              {i ? "Sin límites" : "Gratis"}
-              <small>
-                {i ? "Vista previa de beneficios" : "Para comenzar"}
-              </small>
-            </div>
-            <ul>
-              {(i
-                ? [
-                    "Quizzes sin límite de tokens",
-                    "Repaso inteligente completo",
-                    "Configuración de quizzes por tema",
-                    "Análisis detallado de tus resultados",
-                    "Ruta ENARMapa y flashcards",
-                  ]
-                : [
-                    "10 tokens diarios",
-                    "Quiz rápido y quiz de repaso",
-                    "Flashcards de preguntas marcadas",
-                    "Estadísticas generales",
-                    "Tu ruta personal en ENARMapa",
-                  ]
-              ).map((f) => (
-                <li key={f}>
-                  <Check size={17} />
-                  {f}
-                </li>
-              ))}
-            </ul>
-            <Button secondary={!i} className="full" disabled>
-              {profile.plan === p ? "Tu plan actual" : "Próximamente"}
-            </Button>
+            <Tag color={profile.plan === plan ? "lime" : "purple"}>
+              {profile.plan === plan
+                ? "Tu plan actual"
+                : "Contacta al responsable para conocer las opciones"}
+            </Tag>
           </section>
         ))}
       </div>
       <p className="plans-note">
-        <ShieldCheck size={16} /> La contratación de Premium todavía no está
-        habilitada.
+        <ShieldCheck size={16} /> La web no procesa pagos ni modifica tu
+        membresía.
       </p>
     </>
   );
 }
 
-function SettingsPage({ profile, saved, updateProfile, go }) {
-  const [form, setForm] = useState(profile);
-  const [reminders, setReminders] = useState(
-    saved.preferences.reminders ?? true,
-  );
-  const [sound, setSound] = useState(saved.preferences.sound ?? false);
-  const change = (e) =>
-    setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
+function SettingsPage({ profile, updateProfile, go }) {
+  const [form, setForm] = useState({
+    name: profile.name,
+    specialty: profile.specialty,
+  });
   return (
     <>
       <button className="back-link" onClick={() => go("/perfil")}>
@@ -2938,106 +2664,39 @@ function SettingsPage({ profile, saved, updateProfile, go }) {
       </button>
       <PageTitle
         title="A tu manera."
-        subtitle="Ajusta los detalles que hacen este espacio tuyo."
+        subtitle="Edita el nombre y la especialidad objetivo de tu perfil."
       />
       <form
         className="settings-layout"
         onSubmit={(e) => {
           e.preventDefault();
-          updateProfile({
-            name: form.name,
-            lastname: form.lastname,
-            specialty: form.specialty,
-            target: form.target,
-            preferences: { reminders, sound },
-          });
+          updateProfile(form);
         }}
       >
         <section className="panel">
           <h2>Tu información</h2>
-          <div className="two-fields">
-            <Field
-              label="Nombre"
-              name="name"
-              value={form.name}
-              onChange={change}
-              required
-              maxLength={35}
-            />
-            <Field
-              label="Apellidos"
-              name="lastname"
-              value={form.lastname}
-              onChange={change}
-              maxLength={60}
-            />
-          </div>
+          <Field
+            label="Nombre visible"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            maxLength={100}
+          />
           <Field
             label="Correo de tu cuenta"
-            name="email"
             type="email"
-            value={form.email}
+            value={profile.email}
             readOnly
           />
-          <label className="field">
-            <span>Mi especialidad objetivo</span>
-            <select name="specialty" value={form.specialty} onChange={change}>
-              {areas.map((a) => (
-                <option key={a.name}>{a.name}</option>
-              ))}
-              <option>Aún estoy explorando</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Año del ENARM</span>
-            <select name="target" value={form.target} onChange={change}>
-              {[...new Set(["2026", "2027", "2028", "2029", form.target])].map(
-                (y) => (
-                  <option key={y}>{y}</option>
-                ),
-              )}
-            </select>
-          </label>
-        </section>
-        <section className="panel preferences">
-          <h2>Pequeños detalles</h2>
-          {[
-            {
-              title: "Recordatorio de entrenamiento",
-              desc: "Una invitación a seguir avanzando.",
-              icon: "Bell",
-              value: reminders,
-              set: setReminders,
-            },
-            {
-              title: "Sonidos de la app",
-              desc: "Celebra cada pequeño logro.",
-              icon: "Volume2",
-              value: sound,
-              set: setSound,
-            },
-          ].map((p) => (
-            <div className="preference" key={p.title}>
-              <Icon name={p.icon} />
-              <div>
-                <strong>{p.title}</strong>
-                <p>{p.desc}</p>
-              </div>
-              <button
-                className={`switch ${p.value ? "on" : ""}`}
-                type="button"
-                role="switch"
-                aria-checked={p.value}
-                aria-label={p.title}
-                onClick={() => p.set(!p.value)}
-              >
-                <span />
-              </button>
-            </div>
-          ))}
-          <p className="small-text muted">
-            Tus preferencias se guardan en tu cuenta. Los avisos automáticos y
-            sonidos se habilitarán más adelante.
+          <Field
+            label="Especialidad objetivo"
+            value={form.specialty}
+            onChange={(e) => setForm({ ...form, specialty: e.target.value })}
+            maxLength={100}
+            placeholder="La especialidad que te inspira"
+          />
+          <p className="muted">
+            Deja el nombre o la especialidad en blanco para borrar ese dato del
+            perfil.
           </p>
           <Button className="full" type="submit" icon="Check">
             Guardar cambios
@@ -3068,23 +2727,23 @@ function Help({ go }) {
             },
             {
               q: "¿Cómo se calcula mi promedio?",
-              a: "Tu promedio actual usa las últimas 280 preguntas calificadas. Las estadísticas generales incluyen todos tus quizzes completados. Las tarjetas no cambian tu calificación y las preguntas sin responder cuentan como errores.",
+              a: "Tu promedio actual usa hasta 280 respuestas y pondera la dificultad de las preguntas. Se expresa de 0 a 100 y es distinto del porcentaje de aciertos. Los repasos sin calificación no modifican ese promedio.",
             },
             {
-              q: "¿Para qué sirven los tokens?",
-              a: "Tienes 10 tokens por día, renovados según la fecha de Ciudad de México. Una actividad consume un token por cada cinco preguntas o tarjetas, redondeando hacia arriba. Las misiones son gratuitas y otorgan Tokens+ al completarlas por primera vez.",
+              q: "¿Qué incluye mi membresía?",
+              a: "Los permisos se comprueban al iniciar cada actividad. El análisis avanzado requiere Premium. Tu perfil muestra la membresía efectiva asignada a tu cuenta.",
             },
             {
               q: "¿Qué es ENARMapa?",
-              a: "Es tu ruta de estudio semanal. Empieza con diagnósticos por área y termina con un repaso semanal. Completar una misión desbloquea la siguiente.",
+              a: "Es tu ruta de estudio con misiones y días de descanso. El servicio determina la actividad actual, la cantidad de preguntas y la fecha de desbloqueo del próximo paso.",
             },
             {
               q: "¿Dónde se guarda mi información?",
-              a: "Tu información se guarda en la base de datos del servidor, asociada a tu cuenta. Las contraseñas se guardan mediante hashes y las sesiones se mantienen con cookies privadas. Cada cuenta tiene su propio historial y progreso.",
+              a: "Tu cuenta, historial y avance se gestionan en el servicio de entrenamiento. Con Recordarme, tu sesión puede conservarse entre visitas; cierra sesión al terminar en una computadora compartida.",
             },
             {
               q: "¿Ya puedo usar las preguntas para estudiar?",
-              a: "Las cinco preguntas de muestra permiten explorar la interfaz. No constituyen un banco de preparación validado. El producto completo requeriría contenido y explicaciones revisados por especialistas.",
+              a: "Los entrenamientos utilizan la versión del banco publicada por el responsable del servicio. Consulta con el equipo editorial la validación y las referencias del contenido.",
             },
           ].map((f) => (
             <details className="panel" key={f.q}>
@@ -3122,46 +2781,49 @@ function Marked({ list, toggleMark, go }) {
         <ArrowLeft size={17} /> Mi perfil
       </button>
       <PageTitle
-        eyebrow="GUARDA LO QUE QUIERES VOLVER A PENSAR"
+        eyebrow="TU COLECCIÓN"
         title="Ideas para el siguiente repaso."
-        subtitle={`${list.length} preguntas marcadas en tu colección.`}
+        subtitle={`${list.length} preguntas marcadas.`}
         action={
           list.length > 0 && (
-            <Button icon="Layers" onClick={() => go("/quizzes/flashcards")}>
+            <Button onClick={() => go("/quizzes/flashcards")}>
               Repasar flashcards
             </Button>
           )
         }
       />
       <div className="marked-list">
-        {list.map((q) => (
-          <article className="panel" key={q.id}>
+        {list.map((mark, i) => (
+          <article className="panel" key={mark.globalKey}>
             <div className="section-heading">
-              <Tag color="cyan">{q.area}</Tag>
+              <h3>Pregunta marcada {i + 1}</h3>
               <button
                 className="icon-button text-pink"
-                aria-label={`Desmarcar pregunta de ${q.topic}`}
-                onClick={() => toggleMark(q.id)}
+                aria-label={`Quitar marca ${i + 1}`}
+                onClick={() => toggleMark(mark.globalKey)}
               >
                 <Bookmark fill="currentColor" size={19} />
               </button>
             </div>
-            <h3>{q.text}</h3>
-            <span className="muted small-text">{q.topic}</span>
+            <p className="muted">
+              Guardada el {new Date(mark.markedAt).toLocaleDateString("es-MX")}.
+              Abre un repaso de flashcards para consultar el contenido.
+            </p>
           </article>
         ))}
-        {!list.length && (
-          <EmptyState
-            title="Tu colección empieza con una pregunta"
-            text="Durante un quiz, toca el marcador para guardar lo que quieras repasar."
-            action="Ir a quizzes"
-            onClick={() => go("/quizzes")}
-          />
-        )}
       </div>
+      {!list.length && (
+        <EmptyState
+          title="Tu colección empieza con una pregunta"
+          text="Durante un entrenamiento, toca Marcar para guardar lo que quieras repasar."
+          action="Ir a quizzes"
+          onClick={() => go("/quizzes")}
+        />
+      )}
     </>
   );
 }
+
 function EmptyState({ title, text, action, onClick }) {
   return (
     <div className="empty-state">
